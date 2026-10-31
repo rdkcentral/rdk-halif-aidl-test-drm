@@ -1,0 +1,78 @@
+# Target-specific DRM VTS configuration.
+# Replace placeholders before running against a DUT.
+
+drm:
+  aidl_revision: "0.22.0/drm/0.1.0.0"
+  service_manager: "android"
+  required_instances:
+    - name: "clearkey"
+      required: true
+      uuid: "e2719d58-a985-b3c9-781a-b030af78d30e"
+      scheme: "clearkey"
+  optional_instances:
+    - name: "widevine"
+      required: false
+      uuid: "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
+      scheme: "widevine"
+    - name: "playready"
+      required: false
+      uuid: "9a04f079-9840-4286-ab92-e65be0885f95"
+      scheme: "playready"
+
+  l1:
+    app_package_name: "com.rdk.vts.drm"
+    requested_security_level: "DEFAULT"
+    required_properties:
+      - "vendor"
+      - "version"
+      - "description"
+
+  l2:
+    enabled: false
+    enable_environment: "DRM_L2_ENABLE=1"
+    vector_environment:
+      init_data: "DRM_L2_INIT_DATA"
+      ciphertext: "DRM_L2_CIPHERTEXT"
+      plaintext: "DRM_L2_PLAINTEXT"
+      kid_hex: "DRM_L2_KID_HEX"
+      key_hex: "DRM_L2_KEY_HEX"
+      iv_hex: "DRM_L2_IV_HEX"
+      license_response: "DRM_L2_LICENSE_RESPONSE"
+    license:
+      mode: "local"
+      url: "http://127.0.0.1:8765/license"
+      request_timeout_seconds: 10
+    content:
+      mime_type: "video/mp4"
+      init_data_file: "assets/clearkey_init_data.bin"
+      encrypted_sample_file: "assets/clearkey_sample.enc"
+      expected_plaintext_file: "assets/clearkey_sample.plain"
+      kid_hex: "00000000000000000000000000000000"
+      key_hex: "00000000000000000000000000000000"
+      iv_hex: "00000000000000000000000000000000"
+
+  l3:
+    enabled: false
+    enable_environment: "DRM_L3_ENABLE=1"
+    sample:
+      init_data_file_environment: "DRM_L3_INIT_DATA"
+      encrypted_sample_file_environment: "DRM_L3_ENCRYPTED_SAMPLE"
+      expected_plaintext_file_environment: "DRM_L3_EXPECTED_PLAINTEXT"
+      license_response_file_environment: "DRM_L3_LICENSE_RESPONSE"
+      kid_hex_environment: "DRM_L3_KID_HEX"
+      iv_hex_environment: "DRM_L3_IV_HEX"
+      mime_type_environment: "DRM_L3_MIME_TYPE"
+      mode_environment: "DRM_L3_MODE"
+      default_mode: "AES_CTR"
+    secure_session:
+      enable_environment: "DRM_L3_SECURE_SESSION_ENABLE=1"
+      required_security_level_environment: "DRM_L3_REQUIRED_SECURITY_LEVEL"
+      supported_values:
+        - "SW_SECURE_CRYPTO"
+        - "SW_SECURE_DECODE"
+        - "HW_SECURE_CRYPTO"
+        - "HW_SECURE_DECODE"
+        - "HW_SECURE_ALL"
+    limitations:
+      - "The sample test does not perform demux or decoder playback."
+      - "Key rotation and protected-output policy are not implemented."
