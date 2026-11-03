@@ -43,7 +43,7 @@
  * admission. They do not claim end-to-end playback or protected-output
  * validation.
  *
- * **Pre-Conditions:** Set DRM_L3_ENABLE=1 and provide the documented sample
+ * **Pre-Conditions:** Enable L3 through YAML or environment and provide the documented sample
  * and license fixtures@n
  * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
  *
@@ -76,7 +76,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -132,26 +131,27 @@ bool hasServiceSpecificError(const Status& status, DrmErrors error) {
 }
 
 bool enabled() {
-    const char* value = std::getenv("DRM_L3_ENABLE");
+    const char* value = vts_drm_config_value("DRM_L3_ENABLE");
     if (value == nullptr || std::string(value) != "1") {
-        UT_LOG_INFO("L3 DRM tests disabled; set DRM_L3_ENABLE=1 to run them");
+        UT_LOG_INFO("L3 DRM tests disabled; enable drm.l3.enabled or set DRM_L3_ENABLE=1");
         return false;
     }
     return true;
 }
 
 bool secureSessionTestEnabled() {
-    const char* value = std::getenv("DRM_L3_SECURE_SESSION_ENABLE");
+    const char* value = vts_drm_config_value("DRM_L3_SECURE_SESSION_ENABLE");
     if (value == nullptr || std::string(value) != "1") {
         UT_LOG_INFO(
-                "Secure-session test disabled; set DRM_L3_SECURE_SESSION_ENABLE=1 to run it");
+                "Secure-session test disabled; enable drm.l3.secure_session.enabled "
+                "or set DRM_L3_SECURE_SESSION_ENABLE=1");
         return false;
     }
     return true;
 }
 
 bool readFile(const char* variable, std::vector<uint8_t>* data) {
-    const char* path = std::getenv(variable);
+    const char* path = vts_drm_config_value(variable);
     if (path == nullptr || path[0] == '\0') {
         UT_LOG_ERROR("%s is not set", variable);
         return false;
@@ -172,7 +172,7 @@ bool readFile(const char* variable, std::vector<uint8_t>* data) {
 }
 
 bool decodeHex(const char* variable, std::vector<uint8_t>* data) {
-    const char* value = std::getenv(variable);
+    const char* value = vts_drm_config_value(variable);
     if (value == nullptr || value[0] == '\0' || std::strlen(value) % 2 != 0) {
         UT_LOG_ERROR("%s must contain an even-length hexadecimal value", variable);
         return false;
@@ -212,8 +212,8 @@ bool parseMode(const char* value, Mode* mode) {
 }
 
 bool loadFixture(SampleFixture* fixture) {
-    const char* mimeType = std::getenv("DRM_L3_MIME_TYPE");
-    const char* licenseResponse = std::getenv("DRM_L3_LICENSE_RESPONSE");
+    const char* mimeType = vts_drm_config_value("DRM_L3_MIME_TYPE");
+    const char* licenseResponse = vts_drm_config_value("DRM_L3_LICENSE_RESPONSE");
     if (mimeType == nullptr || mimeType[0] == '\0') {
         UT_LOG_ERROR("DRM_L3_MIME_TYPE is not set");
         return false;
@@ -230,7 +230,7 @@ bool loadFixture(SampleFixture* fixture) {
             !readFile("DRM_L3_LICENSE_RESPONSE", &fixture->licenseResponse) ||
             !decodeHex("DRM_L3_KID_HEX", &fixture->keyId) ||
             !decodeHex("DRM_L3_IV_HEX", &fixture->iv) ||
-            !parseMode(std::getenv("DRM_L3_MODE"), &fixture->mode)) {
+            !parseMode(vts_drm_config_value("DRM_L3_MODE"), &fixture->mode)) {
         return false;
     }
 
@@ -566,7 +566,7 @@ public:
  * **Test Group ID:** L3: 03@n
  * **Test Case ID:** 001@n
  * **Priority:** High@n
- * **Pre-Conditions:** DRM_L3_ENABLE=1 and valid sample/license fixtures@n
+ * **Pre-Conditions:** L3 enabled through YAML or environment and valid sample/license fixtures@n
  * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
@@ -609,7 +609,7 @@ UT_ADD_TEST(VTS_L3_Drm, decryptSampleWithAvBuffer_pos) {
  * **Test Group ID:** L3: 03@n
  * **Test Case ID:** 002@n
  * **Priority:** High@n
- * **Pre-Conditions:** DRM_L3_ENABLE=1 and valid sample/license fixtures@n
+ * **Pre-Conditions:** L3 enabled through YAML or environment and valid sample/license fixtures@n
  * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
@@ -656,7 +656,7 @@ UT_ADD_TEST(VTS_L3_Drm, removedKeysAndClosedSessionRejectDecrypt_neg) {
  * **Test Group ID:** L3: 03@n
  * **Test Case ID:** 003@n
  * **Priority:** High@n
- * **Pre-Conditions:** DRM_L3_ENABLE=1, DRM_L3_SECURE_SESSION_ENABLE=1, and target secure-session settings@n
+ * **Pre-Conditions:** L3 and secure-session test enabled through YAML or environment, and target secure-session settings@n
  * **Dependencies:** DRM factory with the configured security level@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
@@ -672,9 +672,9 @@ UT_ADD_TEST(VTS_L3_Drm, secureSessionAndDecoderRequirement_pos) {
     }
     SecurityLevel requiredLevel = SecurityLevel::UNKNOWN;
     UT_ASSERT_TRUE_FATAL(parseSecurityLevel(
-            std::getenv("DRM_L3_REQUIRED_SECURITY_LEVEL"), &requiredLevel));
+            vts_drm_config_value("DRM_L3_REQUIRED_SECURITY_LEVEL"), &requiredLevel));
 
-    const char* mimeType = std::getenv("DRM_L3_MIME_TYPE");
+    const char* mimeType = vts_drm_config_value("DRM_L3_MIME_TYPE");
     UT_ASSERT_TRUE_FATAL(mimeType != nullptr && mimeType[0] != '\0');
 
     Uuid uuid;

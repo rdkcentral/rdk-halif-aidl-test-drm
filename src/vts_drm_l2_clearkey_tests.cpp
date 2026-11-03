@@ -41,9 +41,9 @@
  *
  * These opt-in tests exercise ClearKey license response handling, key status,
  * and known-vector decryption without decoder playback. Test key and content
- * fixtures are supplied by the test environment.
+ * fixtures are supplied by YAML configuration or environment overrides.
  *
- * **Pre-Conditions:** Set DRM_L2_ENABLE=1 and provide ClearKey fixture inputs@n
+ * **Pre-Conditions:** Enable L2 through YAML or environment and provide ClearKey fixture inputs@n
  * **Dependencies:** ClearKey DRM factory and disposable test vectors@n
  *
  * @endparblock
@@ -62,7 +62,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -86,12 +85,12 @@ struct ClearKeyFixture {
 };
 
 bool enabled() {
-    const char* value = std::getenv("DRM_L2_ENABLE");
+    const char* value = vts_drm_config_value("DRM_L2_ENABLE");
     return value != nullptr && std::string(value) == "1";
 }
 
 bool readFile(const char* variable, std::vector<uint8_t>* data) {
-    const char* path = std::getenv(variable);
+    const char* path = vts_drm_config_value(variable);
     if (path == nullptr || path[0] == '\0') {
         UT_LOG_ERROR("%s is not set", variable);
         return false;
@@ -103,11 +102,15 @@ bool readFile(const char* variable, std::vector<uint8_t>* data) {
     }
     *data = std::vector<uint8_t>(
             std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-    return !data->empty();
+    if (input.bad() || data->empty()) {
+        UT_LOG_ERROR("%s is empty or could not be read completely", variable);
+        return false;
+    }
+    return true;
 }
 
 bool decodeHex(const char* variable, std::vector<uint8_t>* data) {
-    const char* value = std::getenv(variable);
+    const char* value = vts_drm_config_value(variable);
     if (value == nullptr || value[0] == '\0' || std::strlen(value) % 2 != 0) {
         UT_LOG_ERROR("%s must contain an even-length hexadecimal value", variable);
         return false;
@@ -150,7 +153,7 @@ std::string base64Url(const std::vector<uint8_t>& data) {
 
 bool loadFixture(ClearKeyFixture* fixture) {
     if (!enabled()) {
-        UT_LOG_INFO("L2 ClearKey tests disabled; set DRM_L2_ENABLE=1 to run them");
+        UT_LOG_INFO("L2 ClearKey tests disabled; enable drm.l2.enabled or set DRM_L2_ENABLE=1");
         return false;
     }
     return readFile("DRM_L2_INIT_DATA", &fixture->initData) &&
@@ -166,7 +169,7 @@ bool loadFixture(ClearKeyFixture* fixture) {
 }
 
 bool loadLicenseResponse(const ClearKeyFixture& fixture, std::vector<uint8_t>* response) {
-    const char* responsePath = std::getenv("DRM_L2_LICENSE_RESPONSE");
+    const char* responsePath = vts_drm_config_value("DRM_L2_LICENSE_RESPONSE");
     if (responsePath != nullptr && responsePath[0] != '\0') {
         return readFile("DRM_L2_LICENSE_RESPONSE", response);
     }
@@ -229,18 +232,18 @@ class VTS_L2_DrmClearKey : public UTCore {};
 /**
  * @brief Validates the configured ClearKey vector files and cryptographic field sizes.
  *
- * This test is opt-in. It returns without running when DRM_L2_ENABLE is not 1.
+ * This test is opt-in. It returns without running when L2 is disabled.
  *
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 001@n
  * **Priority:** High@n
- * **Pre-Conditions:** Set DRM_L2_ENABLE=1 and provide the ClearKey vector variables@n
+ * **Pre-Conditions:** Enable L2 through YAML or environment and provide the ClearKey vector inputs@n
  * **Dependencies:** Init data, ciphertext, plaintext, KID, key, and IV files/values@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
- * |01|Load the configured ClearKey fixture|DRM_L2_* environment variables|All required fixture inputs are present and readable|Should Pass|
+ * |01|Load the configured ClearKey fixture|YAML or DRM_L2_* overrides|All required fixture inputs are present and readable|Should Pass|
  * |02|Validate KID, key, and IV sizes|KID, key, IV|Each value is 16 bytes|AES-128 test vector|
  * |03|Validate sample lengths|Ciphertext, plaintext|Both have equal length|Should Pass|
  */
@@ -261,7 +264,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, fixtureValidation_pos) {
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 002@n
  * **Priority:** High@n
- * **Pre-Conditions:** Set DRM_L2_ENABLE=1 and provide valid ClearKey fixture inputs@n
+ * **Pre-Conditions:** Enable L2 through YAML or environment and provide valid ClearKey fixture inputs@n
  * **Dependencies:** ClearKey DRM factory and an accepted license response@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
@@ -291,7 +294,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, keyRequestAndResponse_pos) {
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 003@n
  * **Priority:** High@n
- * **Pre-Conditions:** Set DRM_L2_ENABLE=1 and provide a valid ClearKey fixture@n
+ * **Pre-Conditions:** Enable L2 through YAML or environment and provide a valid ClearKey fixture@n
  * **Dependencies:** ClearKey key request/response succeeds@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
@@ -322,7 +325,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, decryptKnownSample_pos) {
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 004@n
  * **Priority:** High@n
- * **Pre-Conditions:** Set DRM_L2_ENABLE=1 and provide a valid ClearKey fixture@n
+ * **Pre-Conditions:** Enable L2 through YAML or environment and provide a valid ClearKey fixture@n
  * **Dependencies:** ClearKey key request/response succeeds@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
@@ -353,7 +356,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, removeKeysRejectsDecrypt_neg) {
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 005@n
  * **Priority:** Medium@n
- * **Pre-Conditions:** Set DRM_L2_ENABLE=1 and provide the configured fixture inputs@n
+ * **Pre-Conditions:** Enable L2 through YAML or environment and provide the configured fixture inputs@n
  * **Dependencies:** ClearKey DRM factory and openable session@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
@@ -390,7 +393,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, invalidInitDataRejected_neg) {
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 006@n
  * **Priority:** Medium@n
- * **Pre-Conditions:** Set DRM_L2_ENABLE=1 and provide the configured fixture inputs@n
+ * **Pre-Conditions:** Enable L2 through YAML or environment and provide the configured fixture inputs@n
  * **Dependencies:** ClearKey DRM factory and openable session@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n

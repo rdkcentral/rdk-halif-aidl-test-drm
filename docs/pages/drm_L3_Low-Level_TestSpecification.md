@@ -23,8 +23,9 @@ planned until the target-specific demux, license, decoder, secure-buffer, and
 output-oracle integrations described below are available. L2 vector success
 must not be reported as L3 playback success.
 
-The L3 test bodies return early unless `DRM_L3_ENABLE=1`; the secure-session
-case additionally requires `DRM_L3_SECURE_SESSION_ENABLE=1`. A disabled run is
+The L3 test bodies return early unless YAML `drm.l3.enabled: true` or
+`DRM_L3_ENABLE=1`; the secure-session case additionally requires YAML
+`drm.l3.secure_session.enabled: true` or `DRM_L3_SECURE_SESSION_ENABLE=1`. A disabled run is
 not L3 validation.
 
 ## Acronyms, Terms and Abbreviations
@@ -58,8 +59,9 @@ Before implementation, define a per-target playback configuration containing:
 
 The current implemented sample and security-level inputs are listed in the
 [configuration template](../../drm_test_configuration/drm_test_config.yaml).
-The template is documentation; tests consume the corresponding environment
-variables directly.
+Tests load these YAML fields at initialization; corresponding environment
+variables override them. See [Test Streams](drm_TestStreams.md) for the mapping,
+path rules, and runtime configuration behavior.
 
 ## Full Playback Prerequisites
 

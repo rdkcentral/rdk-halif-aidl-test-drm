@@ -13,7 +13,7 @@
 
 This document describes the six implemented `VTS_L2_DrmClearKey` tests in
 [vts_drm_l2_clearkey_tests.cpp](../../src/vts_drm_l2_clearkey_tests.cpp).
-All require `DRM_L2_ENABLE=1`. When disabled, the current cases return early;
+All require YAML `drm.l2.enabled: true` or `DRM_L2_ENABLE=1`. When disabled, the current cases return early;
 their reported result is not evidence that a key exchange or decrypt ran.
 
 ### Acronyms, Terms and Abbreviations
@@ -27,7 +27,7 @@ their reported result is not evidence that a key exchange or decrypt ran.
 
 - `ut-core` - RDK testing framework wrapping the test runner.
 - `ClearKeyFixture` - Files and disposable KID/key/IV values supplied through
-  environment variables.
+  YAML configuration or environment overrides.
 - `LicensedSession` - Test helper that creates plugins, opens a session,
   requests/provides a key response, binds crypto, and attempts session closure
   on destruction.
@@ -50,7 +50,8 @@ their reported result is not evidence that a key exchange or decrypt ran.
 | Test Case ID | 001 |
 | Priority | High |
 
-**Pre-Conditions:** Set `DRM_L2_ENABLE=1` and all required fixture variables.
+**Pre-Conditions:** Enable L2 and supply all required fixture inputs through
+YAML or environment overrides as described in [Test Streams](drm_TestStreams.md).
 
 **Dependencies:** Readable init-data, ciphertext, and plaintext files; hexadecimal KID/key/IV.
 

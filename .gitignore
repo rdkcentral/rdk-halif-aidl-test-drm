@@ -1,0 +1,8 @@
+/build/clearkey/
+*.sw*
+*.o
+build
+rdk-halif-aidl
+ut-core
+.lastlogin
+.vscode/

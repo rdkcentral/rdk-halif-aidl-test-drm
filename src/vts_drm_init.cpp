@@ -62,7 +62,12 @@ sp<IDrmFactory> gDrmFactory;
 std::string gDrmFactoryServiceName;
 
 UT_status_t VTS_Drm_init() {
-    const char* configuredInstance = std::getenv("DRM_FACTORY_INSTANCE");
+    const char* configPath = std::getenv("DRM_TEST_CONFIG");
+    if (vts_drm_parse_testconfig(configPath == nullptr ? DRM_TEST_CONFIG_PATH : configPath) !=
+            UT_STATUS_OK) {
+        return UT_STATUS_FAILURE;
+    }
+    const char* configuredInstance = vts_drm_config_value("DRM_FACTORY_INSTANCE");
     const std::string instance = configuredInstance == nullptr || configuredInstance[0] == '\0'
             ? "clearkey"
             : configuredInstance;
@@ -72,12 +77,14 @@ UT_status_t VTS_Drm_init() {
             String16(gDrmFactoryServiceName.c_str()));
     if (binder == nullptr) {
         UT_LOG_ERROR("DRM factory service unavailable: %s", gDrmFactoryServiceName.c_str());
+        VTS_Drm_destroy();
         return UT_STATUS_FAILURE;
     }
 
     gDrmFactory = android::interface_cast<IDrmFactory>(binder);
     if (gDrmFactory == nullptr) {
         UT_LOG_ERROR("Unable to cast DRM factory service: %s", gDrmFactoryServiceName.c_str());
+        VTS_Drm_destroy();
         return UT_STATUS_FAILURE;
     }
     return UT_STATUS_OK;
@@ -86,6 +93,7 @@ UT_status_t VTS_Drm_init() {
 void VTS_Drm_destroy() {
     gDrmFactory.clear();
     gDrmFactoryServiceName.clear();
+    vts_drm_clear_testconfig();
 }
 
 Status vts_drm_getSupportedUuid(Uuid* uuid) {

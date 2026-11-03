@@ -1,7 +1,11 @@
 # Target-specific DRM VTS configuration.
 # Replace placeholders before running against a DUT.
+# Loaded at DRM initialization using UT-Core KVP. Relative fixture paths are
+# resolved from the working directory, as in the other VTS modules.
+# Existing DRM_* environment variables override the corresponding YAML values.
 
 drm:
+  factory_instance: "clearkey"
   aidl_revision: "0.22.0/drm/0.1.0.0"
   service_manager: "android"
   required_instances:
@@ -29,44 +33,34 @@ drm:
 
   l2:
     enabled: false
-    enable_environment: "DRM_L2_ENABLE=1"
-    vector_environment:
-      init_data: "DRM_L2_INIT_DATA"
-      ciphertext: "DRM_L2_CIPHERTEXT"
-      plaintext: "DRM_L2_PLAINTEXT"
-      kid_hex: "DRM_L2_KID_HEX"
-      key_hex: "DRM_L2_KEY_HEX"
-      iv_hex: "DRM_L2_IV_HEX"
-      license_response: "DRM_L2_LICENSE_RESPONSE"
     license:
       mode: "local"
       url: "http://127.0.0.1:8765/license"
       request_timeout_seconds: 10
     content:
       mime_type: "video/mp4"
-      init_data_file: "assets/clearkey_init_data.bin"
-      encrypted_sample_file: "assets/clearkey_sample.enc"
-      expected_plaintext_file: "assets/clearkey_sample.plain"
-      kid_hex: "00000000000000000000000000000000"
-      key_hex: "00000000000000000000000000000000"
-      iv_hex: "00000000000000000000000000000000"
+      init_data_file: ""
+      encrypted_sample_file: ""
+      expected_plaintext_file: ""
+      license_response_file: "" # Optional; otherwise generate ClearKey JSON.
+      kid_hex: ""
+      key_hex: ""
+      iv_hex: ""
 
   l3:
     enabled: false
-    enable_environment: "DRM_L3_ENABLE=1"
     sample:
-      init_data_file_environment: "DRM_L3_INIT_DATA"
-      encrypted_sample_file_environment: "DRM_L3_ENCRYPTED_SAMPLE"
-      expected_plaintext_file_environment: "DRM_L3_EXPECTED_PLAINTEXT"
-      license_response_file_environment: "DRM_L3_LICENSE_RESPONSE"
-      kid_hex_environment: "DRM_L3_KID_HEX"
-      iv_hex_environment: "DRM_L3_IV_HEX"
-      mime_type_environment: "DRM_L3_MIME_TYPE"
-      mode_environment: "DRM_L3_MODE"
-      default_mode: "AES_CTR"
+      init_data_file: ""
+      encrypted_sample_file: ""
+      expected_plaintext_file: ""
+      license_response_file: ""
+      kid_hex: ""
+      iv_hex: ""
+      mime_type: "video/mp4"
+      mode: "AES_CTR"
     secure_session:
-      enable_environment: "DRM_L3_SECURE_SESSION_ENABLE=1"
-      required_security_level_environment: "DRM_L3_REQUIRED_SECURITY_LEVEL"
+      enabled: false
+      required_security_level: ""
       supported_values:
         - "SW_SECURE_CRYPTO"
         - "SW_SECURE_DECODE"

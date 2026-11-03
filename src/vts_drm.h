@@ -66,6 +66,7 @@
 
 #include <ut.h>
 #include <ut_log.h>
+#include "vts_drm_parse_testconfig.h"
 
 #include <string>
 #include <vector>
