@@ -34,6 +34,9 @@ enable overrides retain the existing `1` convention.
 | `DRM_L2_KEY_HEX` | `drm.l2.content.key_hex` |
 | `DRM_L2_IV_HEX` | `drm.l2.content.iv_hex` |
 | `DRM_L2_LICENSE_RESPONSE` | `drm.l2.content.license_response_file` |
+| `DRM_L2_LICENSE_MODE` | `drm.l2.license.mode` |
+| `DRM_L2_LICENSE_URL` | `drm.l2.license.url` |
+| `DRM_L2_LICENSE_REQUEST_TIMEOUT_SECONDS` | `drm.l2.license.request_timeout_seconds` |
 
 Required inputs (provided through YAML or environment overrides):
 
@@ -47,7 +50,10 @@ Required inputs (provided through YAML or environment overrides):
 | `DRM_L2_KID_HEX` | Yes | 16-byte disposable KID, encoded as 32 hexadecimal characters |
 | `DRM_L2_KEY_HEX` | Yes | Matching 16-byte disposable test key, encoded as 32 hexadecimal characters |
 | `DRM_L2_IV_HEX` | Yes | Matching 16-byte IV, encoded as 32 hexadecimal characters |
-| `DRM_L2_LICENSE_RESPONSE` | No | Path to a non-empty scheme-accepted response file; otherwise generate ClearKey JSON from KID/key |
+| `DRM_L2_LICENSE_RESPONSE` | No | Local mode: response file, otherwise generate ClearKey JSON from KID/key; ignored in HTTP mode |
+| `DRM_L2_LICENSE_MODE` | No | `local` (default) or `http` |
+| `DRM_L2_LICENSE_URL` | HTTP mode | HTTP(S) endpoint including port; defaults to `http://127.0.0.1:8765/license` |
+| `DRM_L2_LICENSE_REQUEST_TIMEOUT_SECONDS` | No | Positive integer for total HTTP timeout and connection timeout; default `10` |
 
 Use the scheme's accepted init-data format and ensure its KID matches the
 license response and vector. The current decrypt test calls legacy
@@ -56,9 +62,9 @@ AVBuffer API. Record any target algorithm prerequisite rather than assuming
 this vector proves CTR/CBC mode coverage.
 
 The [configuration template](../../drm_test_configuration/drm_test_config.yaml)
-contains the runtime input fields. Its license URL/timeout, L1 settings,
+contains the runtime input fields. Its L1 settings,
 `l2.content.mime_type`, and instance lists remain descriptive and are not
-consumed by current C++ tests. L2 uses `video/mp4` and no HTTP exchange.
+consumed by current C++ tests. L2 uses `video/mp4`.
 
 ## L3 Sample Inputs
 
@@ -75,6 +81,9 @@ consumed by current C++ tests. L2 uses `video/mp4` and no HTTP exchange.
 | `DRM_L3_MODE` | `drm.l3.sample.mode` |
 | `DRM_L3_SECURE_SESSION_ENABLE` | `drm.l3.secure_session.enabled` |
 | `DRM_L3_REQUIRED_SECURITY_LEVEL` | `drm.l3.secure_session.required_security_level` |
+| `DRM_L3_LICENSE_MODE` | `drm.l3.license.mode` |
+| `DRM_L3_LICENSE_URL` | `drm.l3.license.url` |
+| `DRM_L3_LICENSE_REQUEST_TIMEOUT_SECONDS` | `drm.l3.license.request_timeout_seconds` |
 
 Required inputs (provided through YAML or environment overrides):
 
@@ -84,19 +93,36 @@ Required inputs (provided through YAML or environment overrides):
 | `DRM_L3_INIT_DATA` | Yes | Path to non-empty scheme-accepted init data |
 | `DRM_L3_ENCRYPTED_SAMPLE` | Yes | Path to one non-empty demuxed encrypted sample |
 | `DRM_L3_EXPECTED_PLAINTEXT` | Yes | Independent plaintext sample with matching byte length |
-| `DRM_L3_LICENSE_RESPONSE` | Yes | Path to a response accepted by the selected scheme |
+| `DRM_L3_LICENSE_RESPONSE` | Local mode only | Path to an accepted response file; ignored in HTTP mode |
 | `DRM_L3_KID_HEX` | Yes | 16-byte sample KID as 32 hexadecimal characters |
 | `DRM_L3_IV_HEX` | Yes | 16-byte sample IV as 32 hexadecimal characters |
 | `DRM_L3_MIME_TYPE` | Yes | MIME type used in the key request |
 | `DRM_L3_MODE` | No | `AES_CTR` (default), `AES_CBC`, or `AES_CBC_CTS` |
 | `DRM_L3_SECURE_SESSION_ENABLE` | No | YAML secure-session `enabled: true` or environment `1` executes the capability test |
 | `DRM_L3_REQUIRED_SECURITY_LEVEL` | For secure-session test | Explicit supported security level to request |
+| `DRM_L3_LICENSE_MODE` | No | `local` (default) or `http` |
+| `DRM_L3_LICENSE_URL` | HTTP mode | HTTP(S) endpoint including port; defaults to `http://127.0.0.1:8765/license` |
+| `DRM_L3_LICENSE_REQUEST_TIMEOUT_SECONDS` | No | Positive integer for total HTTP timeout and connection timeout; default `10` |
 
 This test checks the AIDL AVBuffer decrypt path only. It does not parse the
 container, validate stream metadata, or submit samples to a decoder.
 L2, L3 and secure-session tests default to disabled. Missing optional values
 default to factory `clearkey`, mode `AES_CTR`, or empty fixture inputs. YAML
 scalar values must fit within the UT-Core KVP limit of 255 bytes.
+
+## HTTP License Transport
+
+Both levels support `license.mode: "http"`. The test POSTs the plugin's key
+request bytes, with `Content-Type: application/json`, to the configured URL
+and supplies the response bytes unchanged to `provideKeyResponse()`. No file
+or generated-response fallback occurs in HTTP mode. Only a non-empty HTTP 2xx
+response up to 1 MiB is accepted; the DRM plugin validates the license content.
+Timeout, connection errors, redirects and non-2xx responses fail the test.
+Proxies/redirects are disabled; HTTPS certificate checks remain enabled.
+This is ClearKey JSON transport, not vendor-specific authentication/wrapping.
+
+See [HTTP setup and the disposable local server](../../README.md#http-license-exchange-l2-and-l3)
+for a configurable-port server and the separate-DUT addressing rules.
 
 ## Full L3 Stream Requirements
 

@@ -34,7 +34,7 @@ drm:
   l2:
     enabled: false
     license:
-      mode: "local"
+      mode: "local" # local: file/generated response; http: POST plugin key request.
       url: "http://127.0.0.1:8765/license"
       request_timeout_seconds: 10
     content:
@@ -42,13 +42,17 @@ drm:
       init_data_file: ""
       encrypted_sample_file: ""
       expected_plaintext_file: ""
-      license_response_file: "" # Optional; otherwise generate ClearKey JSON.
+      license_response_file: "" # Local mode only; optional, otherwise generate ClearKey JSON.
       kid_hex: ""
       key_hex: ""
       iv_hex: ""
 
   l3:
     enabled: false
+    license:
+      mode: "local" # local: response file; http: POST plugin key request.
+      url: "http://127.0.0.1:8765/license"
+      request_timeout_seconds: 10
     sample:
       init_data_file: ""
       encrypted_sample_file: ""

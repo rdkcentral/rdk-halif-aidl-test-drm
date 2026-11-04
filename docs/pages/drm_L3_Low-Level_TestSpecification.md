@@ -6,7 +6,6 @@
 - [Acronyms, Terms and Abbreviations](#acronyms-terms-and-abbreviations)
 - [References](#references)
 - [Test Configuration](#test-configuration)
-- [Prerequisites](#prerequisites)
 - [L3 Tests](#l3-tests)
 
 ## Overview
@@ -74,7 +73,7 @@ path rules, and runtime configuration behavior.
 
 ## L3 Tests
 
-### Test 1: AVBuffer-Backed Sample Decryption (Implemented)
+### Test 1: AVBuffer-Backed Sample Decryption
 
 | Title | Details |
 |---|---|
@@ -94,12 +93,12 @@ path rules, and runtime configuration behavior.
 
 | Variation / Steps | Description | Test Data | Expected Result | Notes |
 |---|---|---|---|---|
-| 01 | Open session and complete license exchange | Init data and configured license response | Request is created and response accepted | No network exchange is performed |
+| 01 | Open session and complete license exchange | Init data, HTTP endpoint or local response file | Request is created and response accepted | `drm.l3.license.mode` selects HTTP POST or file |
 | 02 | Submit the encrypted sample through AIDL AVBuffer decryption | KID, IV, mode, subsample, source and destination handles | Decrypt succeeds and reports the expected byte count | Non-secure test buffers |
 | 03 | Compare the output against the expected plaintext | Independent plaintext fixture | Bytes match exactly | Does not validate playback |
 | 04 | Release DRM and AVBuffer resources | Session and allocated handles | Resources are released | Cleanup also runs on failure |
 
-### Test 2: Removed-Key and Closed-Session Rejection (Implemented)
+### Test 2: Removed-Key and Closed-Session Rejection
 
 | Title | Details |
 |---|---|
@@ -127,7 +126,7 @@ path rules, and runtime configuration behavior.
 Key rotation, invalid-license responses, and playback output restrictions are
 not covered by this case.
 
-### Test 3: Secure-Session Capability Admission (Implemented)
+### Test 3: Secure-Session Capability Admission
 
 | Title | Details |
 |---|---|

@@ -55,6 +55,7 @@
  */
 
 #include "vts_drm.h"
+#include "vts_drm_license.h"
 
 #include <com/rdk/hal/drm/KeyRequest.h>
 #include <com/rdk/hal/drm/KeyStatus.h>
@@ -168,7 +169,15 @@ bool loadFixture(ClearKeyFixture* fixture) {
             fixture->ciphertext.size() == fixture->plaintext.size();
 }
 
-bool loadLicenseResponse(const ClearKeyFixture& fixture, std::vector<uint8_t>* response) {
+bool loadLicenseResponse(const ClearKeyFixture& fixture,
+        const std::vector<uint8_t>& request, std::vector<uint8_t>* response) {
+    bool useHttp = false;
+    if (!vts_drm_license_uses_http("L2", &useHttp)) {
+        return false;
+    }
+    if (useHttp) {
+        return vts_drm_request_http_license("L2", request, response);
+    }
     const char* responsePath = vts_drm_config_value("DRM_L2_LICENSE_RESPONSE");
     if (responsePath != nullptr && responsePath[0] != '\0') {
         return readFile("DRM_L2_LICENSE_RESPONSE", response);
@@ -204,7 +213,7 @@ public:
             return false;
         }
         std::vector<uint8_t> response;
-        if (!loadLicenseResponse(fixture, &response)) {
+        if (!loadLicenseResponse(fixture, request.request, &response)) {
             return false;
         }
         com::rdk::hal::drm::KeySetId keySetId;
@@ -271,7 +280,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, fixtureValidation_pos) {
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
  * |01|Open a DRM session and request a streaming key|Init data, video/mp4, STREAMING|Request succeeds and request bytes are non-empty|Should Pass|
- * |02|Provide the generated or configured license response|KID and key from the fixture, or DRM_L2_LICENSE_RESPONSE|Response succeeds and crypto session binding succeeds|Test-only ClearKey material|
+ * |02|Acquire and provide the license response|HTTP endpoint or local generated/file response|Response succeeds and crypto session binding succeeds|Test-only ClearKey material|
  * |03|Query the session key status|Session ID|Call succeeds and returns at least one status value|Should Pass|
  */
 UT_ADD_TEST(VTS_L2_DrmClearKey, keyRequestAndResponse_pos) {

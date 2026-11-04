@@ -19,9 +19,9 @@ target/test-run inputs, not repository data.
 1. Open a session.
 2. Build a known ClearKey init-data blob containing the test KID.
 3. Call `getKeyRequest(session, initData, mime, STREAMING, parameters)`.
-4. Provide a test license response. The current ClearKey test generates a
-   deterministic JSON response from the disposable KID/key fixture or reads a
-   configured response file; it does not yet send an HTTP request.
+4. Acquire a test license response. With `drm.l2.license.mode: "http"`, POST the
+   plugin's key request to the configured URL/port. The default `local` mode
+   generates ClearKey JSON from the disposable KID/key or reads a response file.
 5. Call `provideKeyResponse(session, response)`.
 6. Call `queryKeyStatus(session)` and verify the test key is usable.
 7. Create a crypto plugin and bind it with `setMediaDrmSession(session)`.
@@ -45,7 +45,9 @@ in [Test Streams and Vector Inputs](drm_TestStreams.md) to execute these cases.
 Disabled cases return early in the current runner; their reported results
 must not be interpreted as executed L2 coverage.
 
-HTTP/license-server integration is future work. Vendor-controlled Widevine or
+L2 and L3 support configurable HTTP license exchange; see
+[HTTP license transport](drm_TestStreams.md#http-license-transport).
+Vendor-controlled Widevine or
 PlayReady endpoints require scheme-specific test credentials, request formats,
 and security state and are not exercised by the current ClearKey tests.
 
@@ -81,12 +83,8 @@ Widevine L1 secure-path coverage additionally requires the OEMCrypto/TEE,
 protected memory, secure decoder, display policy, and HDCP setup; it is not a
 ClearKey substitute.
 
-## Blocking prerequisites
+## prerequisites
 
-- Pin the `rdk-halif-aidl` revision and export generated DRM headers/libs.
-- Confirm the exact Binder service lookup and instance configuration on the
-  DUT.
-- Add `hfp-drm.yaml` parsing and a DRM test configuration format.
 - Provide a ClearKey UUID, KID, encrypted sample, plaintext, and test key.
 - Provide AVBuffer allocation/import helpers for L2 AIDL decrypt tests.
 - Provide an encrypted stream and playback/output validation method for

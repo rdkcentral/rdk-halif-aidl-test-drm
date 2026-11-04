@@ -66,6 +66,48 @@ no new YAML dependency. See the
 [YAML/environment mapping](docs/pages/drm_TestStreams.md).
 Do not commit test keys, license responses, or encrypted media.
 
+### HTTP license exchange (L2 and L3)
+
+Set `license.mode: "http"` under `drm.l2` and/or `drm.l3`:
+
+```yaml
+license:
+  mode: "http"
+  url: "http://127.0.0.1:8765/license"
+  request_timeout_seconds: 10
+```
+
+The port is part of the URL; replace `8765` as needed. The test POSTs the
+plugin's actual `getKeyRequest()` bytes as `application/json`, then passes the
+HTTP response bytes to `provideKeyResponse()`. HTTP errors, timeouts, empty
+responses, and responses over 1 MiB fail the test, without local fallback.
+Redirects and proxies are disabled; HTTPS uses libcurl's normal certificate
+verification. This ClearKey transport does not implement vendor authentication
+or request wrapping.
+
+The default `local` mode preserves L2 generated/file responses and L3 file
+responses. Response-file settings are ignored in HTTP mode.
+
+Start the disposable local server using an existing generated license fixture:
+
+```sh
+python3 tools/clearkey_license_server.py \
+  --license /tmp/clearkey_fixtures/license.json --port 8765
+```
+
+The server validates requested KIDs and returns only matching disposable keys.
+It binds to `127.0.0.1` by default. For a separate DUT, explicitly set
+`--bind <server-interface-address>` and use that reachable address in the YAML
+URL; DUT `127.0.0.1` refers to the DUT, not your host. This server is test-only,
+without authentication or TLS: use an isolated test network and never
+production keys. Stop it with Ctrl+C. Restart it after changing its fixture.
+
+Rebuild the VTS binary once to include HTTP support. The unified Makefile also
+needs the DRM curl-linking change: it reuses UT-Control's bundled curl/OpenSSL
+archives, avoiding additional runtime libraries. Custom SDKs may override
+`DRM_CURL_DIR`/`DRM_CURL_LIBS`; a system-libcurl build must provide libcurl on
+the DUT. Subsequent URL/port/timeout changes require only restarting the tests.
+
 ### Configuration parser regression tests
 
 With host UT-Core/UT-Control dependencies built, run from this component:
@@ -77,6 +119,8 @@ make -f tests/Makefile test UT_CORE_DIR=/path/to/ut-core
 `UT_CONTROL_LIB_DIR` and `GTEST_INCLUDE_DIR` can override the existing dependency
 locations. These tests use the real UT-Core KVP parser without Binder services
 and check every input mapping, overrides, defaults, reloads, and invalid input.
+The same target also runs loopback HTTP client/server tests using Python 3's
+standard library; `CURL_DIR`/`CURL_LIBS` can select existing host curl dependencies.
 
 ### Reference ClearKey service
 

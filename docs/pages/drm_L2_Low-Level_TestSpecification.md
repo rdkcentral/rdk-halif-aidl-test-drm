@@ -44,35 +44,10 @@ their reported result is not evidence that a key exchange or decrypt ran.
 
 | Title | Details |
 |---|---|
-| Function Name | `VTS_L2_DrmClearKey.fixtureValidation_pos` |
-| Description | Validate configured vector inputs before exercising DRM. |
-| Test Group | L2 : 02 |
-| Test Case ID | 001 |
-| Priority | High |
-
-**Pre-Conditions:** Enable L2 and supply all required fixture inputs through
-YAML or environment overrides as described in [Test Streams](drm_TestStreams.md).
-
-**Dependencies:** Readable init-data, ciphertext, and plaintext files; hexadecimal KID/key/IV.
-
-**User Interaction:** None.
-
-**Test Procedure:**
-
-| Variation / Steps | Description | Test Data | Expected Result | Notes |
-|---|---|---|---|---|
-| 01 | Load fixture files | `DRM_L2_INIT_DATA`, `DRM_L2_CIPHERTEXT`, `DRM_L2_PLAINTEXT` | Files are readable and non-empty | No HAL call |
-| 02 | Decode and validate hexadecimal values | `DRM_L2_KID_HEX`, `DRM_L2_KEY_HEX`, `DRM_L2_IV_HEX` | Each decodes to 16 bytes | Disposable inputs only |
-| 03 | Check sample lengths | Ciphertext and plaintext | Byte lengths match | Checked by fixture loader |
-
-### Test 2
-
-| Title | Details |
-|---|---|
 | Function Name | `VTS_L2_DrmClearKey.keyRequestAndResponse_pos` |
 | Description | Acquire a test key and query session key status. |
 | Test Group | L2 : 02 |
-| Test Case ID | 002 |
+| Test Case ID | 001 |
 | Priority | High |
 
 **Pre-Conditions:** L2 enabled; valid fixture and selected ClearKey factory.
@@ -86,18 +61,18 @@ YAML or environment overrides as described in [Test Streams](drm_TestStreams.md)
 | Variation / Steps | Description | Test Data | Expected Result | Notes |
 |---|---|---|---|---|
 | 01 | Create DRM/crypto plugins and open a session | Advertised UUID, DEFAULT security level | Calls succeed | `LicensedSession` helper |
-| 02 | Generate a streaming request | Session ID, init data, `video/mp4`, STREAMING | Request succeeds and contains bytes | No HTTP transport |
-| 03 | Provide generated JSON or configured response file | KID/key or `DRM_L2_LICENSE_RESPONSE` | `provideKeyResponse` succeeds | File is optional |
+| 02 | Generate a streaming request | Session ID, init data, `video/mp4`, STREAMING | Request succeeds and contains bytes | Plugin-generated challenge |
+| 03 | Acquire and provide the license response | HTTP POST in `http` mode; generated JSON or file in `local` mode | `provideKeyResponse` succeeds | Configured URL/port/timeout |
 | 04 | Bind crypto and query key status | Session ID | Binding succeeds; status query succeeds and is non-empty | Does not validate vendor-specific status values |
 
-### Test 3
+### Test 2
 
 | Title | Details |
 |---|---|
 | Function Name | `VTS_L2_DrmClearKey.decryptKnownSample_pos` |
 | Description | Compare known-vector decrypt output with independent plaintext. |
 | Test Group | L2 : 02 |
-| Test Case ID | 003 |
+| Test Case ID | 002 |
 | Priority | High |
 
 **Pre-Conditions:** L2 enabled; valid fixture; matching disposable key response.
@@ -110,21 +85,21 @@ YAML or environment overrides as described in [Test Streams](drm_TestStreams.md)
 
 | Variation / Steps | Description | Test Data | Expected Result | Notes |
 |---|---|---|---|---|
-| 01 | Acquire test key and bind session | Fixture | Setup succeeds | Same setup as Test 2 |
+| 01 | Acquire test key and bind session | Fixture | Setup succeeds | Same setup as Test 1 |
 | 02 | Decrypt sample | Session, KID, ciphertext, IV | `IDrmPlugin.decrypt` succeeds | Legacy vector API |
 | 03 | Compare full output | Decrypted bytes, plaintext | Exact byte-for-byte equality | No decoder or playback |
 
 This test does not call `setCipherAlgorithm` or prove AVBuffer crypto routing.
 Do not treat it as `ICryptoPlugin.decrypt(DecryptArgs)` conformance.
 
-### Test 4
+### Test 3
 
 | Title | Details |
 |---|---|
 | Function Name | `VTS_L2_DrmClearKey.removeKeysRejectsDecrypt_neg` |
 | Description | Reject decrypt after removing the acquired keys. |
 | Test Group | L2 : 02 |
-| Test Case ID | 004 |
+| Test Case ID | 003 |
 | Priority | High |
 
 **Pre-Conditions:** L2 enabled; valid fixture.
@@ -141,14 +116,14 @@ Do not treat it as `ICryptoPlugin.decrypt(DecryptArgs)` conformance.
 | 02 | Remove session keys | Session ID | `removeKeys` succeeds | Session remains open |
 | 03 | Attempt decrypt | Same KID/ciphertext/IV | Call fails | Exact error code is not yet asserted |
 
-### Test 5
+### Test 4
 
 | Title | Details |
 |---|---|
 | Function Name | `VTS_L2_DrmClearKey.invalidInitDataRejected_neg` |
 | Description | Reject a streaming key request with empty init data. |
 | Test Group | L2 : 02 |
-| Test Case ID | 005 |
+| Test Case ID | 004 |
 | Priority | Medium |
 
 **Pre-Conditions:** L2 enabled; fixture loader succeeds.
@@ -165,14 +140,14 @@ Do not treat it as `ICryptoPlugin.decrypt(DecryptArgs)` conformance.
 | 02 | Request streaming key | Session, empty init data, `video/mp4` | Call fails | Exact error code is not yet asserted |
 | 03 | Close session | Session ID | Close succeeds | Cleanup |
 
-### Test 6
+### Test 5
 
 | Title | Details |
 |---|---|
 | Function Name | `VTS_L2_DrmClearKey.closedSessionRejectsOperations_neg` |
 | Description | Reject key requests after session closure. |
 | Test Group | L2 : 02 |
-| Test Case ID | 006 |
+| Test Case ID | 005 |
 | Priority | Medium |
 
 **Pre-Conditions:** L2 enabled; fixture loader succeeds.

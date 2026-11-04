@@ -56,8 +56,9 @@
  */
 
 #include "vts_drm.h"
-
-#include <IAVBufferHelper.h>
+#include "vts_drm_license.h"
+#include "vts_avbuffer.h"
+#include <avbufferhelper.h>
 
 #include <binder/ProcessState.h>
 #include <com/rdk/hal/audiodecoder/IAudioDecoder.h>
@@ -105,6 +106,12 @@ using com::rdk::hal::drm::SubSample;
 UT_ADD_TEST_TO_GROUP(VTS_L3_Drm, UT_TESTS_L3)
 
 namespace {
+
+static sp<IAVBuffer> vts_avbuffer_getService() {
+    return interface_cast<IAVBuffer>(
+            defaultServiceManager()->getService(
+                    String16(IAVBuffer::serviceName().c_str())));
+}
 
 struct SampleFixture {
     std::vector<uint8_t> initData;
@@ -213,13 +220,15 @@ bool parseMode(const char* value, Mode* mode) {
 
 bool loadFixture(SampleFixture* fixture) {
     const char* mimeType = vts_drm_config_value("DRM_L3_MIME_TYPE");
-    const char* licenseResponse = vts_drm_config_value("DRM_L3_LICENSE_RESPONSE");
     if (mimeType == nullptr || mimeType[0] == '\0') {
         UT_LOG_ERROR("DRM_L3_MIME_TYPE is not set");
         return false;
     }
-    if (licenseResponse == nullptr || licenseResponse[0] == '\0') {
-        UT_LOG_ERROR("DRM_L3_LICENSE_RESPONSE is not set");
+    bool useHttp = false;
+    if (!vts_drm_license_uses_http("L3", &useHttp)) {
+        return false;
+    }
+    if (!useHttp && !readFile("DRM_L3_LICENSE_RESPONSE", &fixture->licenseResponse)) {
         return false;
     }
     fixture->mimeType = mimeType;
@@ -227,7 +236,6 @@ bool loadFixture(SampleFixture* fixture) {
     if (!readFile("DRM_L3_INIT_DATA", &fixture->initData) ||
             !readFile("DRM_L3_ENCRYPTED_SAMPLE", &fixture->ciphertext) ||
             !readFile("DRM_L3_EXPECTED_PLAINTEXT", &fixture->plaintext) ||
-            !readFile("DRM_L3_LICENSE_RESPONSE", &fixture->licenseResponse) ||
             !decodeHex("DRM_L3_KID_HEX", &fixture->keyId) ||
             !decodeHex("DRM_L3_IV_HEX", &fixture->iv) ||
             !parseMode(vts_drm_config_value("DRM_L3_MODE"), &fixture->mode)) {
@@ -284,7 +292,15 @@ public:
         }
 
         com::rdk::hal::drm::KeySetId keySetId;
-        status = drm->provideKeyResponse(session, fixture.licenseResponse, &keySetId);
+        bool useHttp = false;
+        if (!vts_drm_license_uses_http("L3", &useHttp)) {
+            return false;
+        }
+        std::vector<uint8_t> response = fixture.licenseResponse;
+        if (useHttp && !vts_drm_request_http_license("L3", request.request, &response)) {
+            return false;
+        }
+        status = drm->provideKeyResponse(session, response, &keySetId);
         if (!status.isOk()) {
             UT_LOG_ERROR("DRM license response was rejected");
             return false;
@@ -321,16 +337,16 @@ public:
     std::vector<uint8_t> session;
 };
 
+
 class SampleBuffers {
 public:
     bool open(size_t size) {
-        mManager = interface_cast<IAVBuffer>(
-                defaultServiceManager()->getService(
-                        String16(IAVBuffer::serviceName().c_str())));
+        mManager = vts_avbuffer_getService();
         if (mManager == nullptr) {
-            UT_LOG_ERROR("AVBuffer service is unavailable");
+            UT_LOG_ERROR("AVBuffer Service not available");
             return false;
         }
+
         mHelper = getAVBufferHelperInstance();
         if (mHelper == nullptr) {
             UT_LOG_ERROR("AVBuffer helper is unavailable");
