@@ -282,7 +282,7 @@ public:
         status = drm->getKeyRequest(
                 session,
                 fixture.initData,
-                String16(fixture.mimeType.c_str()),
+                fromUtf8(fixture.mimeType),
                 KeyType::STREAMING,
                 {},
                 &request);
@@ -710,7 +710,7 @@ UT_ADD_TEST(VTS_L3_Drm, secureSessionAndDecoderRequirement_pos) {
 
     bool secureDecoderRequired = false;
     UT_ASSERT_TRUE_FATAL(crypto->requiresSecureDecoderComponent(
-            String16(mimeType), &secureDecoderRequired).isOk());
+            fromUtf8(mimeType), &secureDecoderRequired).isOk());
     UT_ASSERT_TRUE(secureDecoderRequired);
 
     UT_ASSERT_TRUE(session.close());

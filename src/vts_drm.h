@@ -64,6 +64,7 @@
 #include <com/rdk/hal/drm/ICryptoPlugin.h>
 #include <com/rdk/hal/drm/IDrmPlugin.h>
 
+#include "drm_string_compat.h"
 #include <ut.h>
 #include <ut_log.h>
 #include "vts_drm_parse_testconfig.h"
@@ -78,6 +79,8 @@ using com::rdk::hal::drm::ICryptoPlugin;
 using com::rdk::hal::drm::IDrmFactory;
 using com::rdk::hal::drm::IDrmPlugin;
 using com::rdk::hal::drm::Uuid;
+using ::rdk::drm_compat::DrmString;
+using ::rdk::drm_compat::fromUtf8;
 
 extern sp<IDrmFactory> gDrmFactory;
 extern std::string gDrmFactoryServiceName;
@@ -87,6 +90,20 @@ Status vts_drm_createPlugins(
         const Uuid& uuid,
         sp<IDrmPlugin>* drmPlugin,
         sp<ICryptoPlugin>* cryptoPlugin);
+
+#define DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes) \
+    do { \
+        Status drmStatus; \
+        UT_LOG_INFO("Calling IDrmFactory::getSupportedCryptoSchemes()"); \
+        drmStatus = gDrmFactory->getSupportedCryptoSchemes(&(schemes)); \
+        UT_LOG_INFO( \
+                "Result IDrmFactory::getSupportedCryptoSchemes(), status:[isOK:%s, exception:%d], uuidCount:%zu", \
+                drmStatus.isOk() ? "true" : "false", \
+                drmStatus.exceptionCode(), \
+                (schemes).uuids.size()); \
+        UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
+        UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
+    } while (0)
 
 #endif
 

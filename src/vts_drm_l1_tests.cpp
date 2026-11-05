@@ -190,9 +190,7 @@ UT_ADD_TEST(VTS_L1_Drm, interfaceMetadata_pos) {
  */
 UT_ADD_TEST(VTS_L1_Drm, supportedCryptoSchemes_pos) {
     CryptoSchemes schemes;
-    const Status status = gDrmFactory->getSupportedCryptoSchemes(&schemes);
-
-    UT_ASSERT_TRUE(status.isOk());
+    DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes);
     UT_ASSERT_FALSE(schemes.uuids.empty());
 
     const std::set<Uuid> uniqueUuids(schemes.uuids.begin(), schemes.uuids.end());
@@ -248,7 +246,7 @@ UT_ADD_TEST(VTS_L1_Drm, createPlugins_pos) {
 UT_ADD_TEST(VTS_L1_Drm, createDrmPluginUnsupportedUuid_neg) {
     sp<IDrmPlugin> plugin;
     const Status status = gDrmFactory->createDrmPlugin(
-            unsupportedUuid(), String16("com.rdk.vts.drm"), &plugin);
+            unsupportedUuid(), fromUtf8("com.rdk.vts.drm"), &plugin);
 
     UT_ASSERT_TRUE(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_CANNOT_HANDLE));
     UT_ASSERT_TRUE(plugin == nullptr);
@@ -337,7 +335,7 @@ UT_ADD_TEST(VTS_L1_Drm, closeSessionTwice_neg) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, String16("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
 
     std::vector<uint8_t> sessionId;
     UT_ASSERT_TRUE(drmPlugin->openSession(SecurityLevel::DEFAULT, &sessionId).isOk());
@@ -390,7 +388,7 @@ UT_ADD_TEST(VTS_L1_Drm, emptySessionOperations_neg) {
     const Status keyRequestStatus = drmPlugin->getKeyRequest(
             emptySession,
             {},
-            String16("video/mp4"),
+            fromUtf8("video/mp4"),
             KeyType::STREAMING,
             {},
             &request);
@@ -452,15 +450,15 @@ UT_ADD_TEST(VTS_L1_Drm, closedSessionOperations_neg) {
     std::vector<uint8_t> output;
 
     const Status cipherStatus =
-            drmPlugin->setCipherAlgorithm(sessionId, String16("AES/CBC/PKCS5Padding"));
+            drmPlugin->setCipherAlgorithm(sessionId, fromUtf8("AES/CBC/PKCS5Padding"));
     UT_ASSERT_TRUE(hasServiceSpecificError(
             cipherStatus, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
 
-    const Status macStatus = drmPlugin->setMacAlgorithm(sessionId, String16("HmacSHA256"));
+    const Status macStatus = drmPlugin->setMacAlgorithm(sessionId, fromUtf8("HmacSHA256"));
     UT_ASSERT_TRUE(hasServiceSpecificError(
             macStatus, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
 
-    const Status playbackStatus = drmPlugin->setPlaybackId(sessionId, String16("vts-playback"));
+    const Status playbackStatus = drmPlugin->setPlaybackId(sessionId, fromUtf8("vts-playback"));
     UT_ASSERT_TRUE(hasServiceSpecificError(
             playbackStatus, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
 
@@ -503,7 +501,7 @@ UT_ADD_TEST(VTS_L1_Drm, hdcpLevels_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, String16("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
 
     HdcpLevels levels;
     UT_ASSERT_TRUE(drmPlugin->getHdcpLevels(&levels).isOk());
@@ -533,7 +531,7 @@ UT_ADD_TEST(VTS_L1_Drm, numberOfSessions_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, String16("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
 
     NumberOfSessions before;
     UT_ASSERT_TRUE(drmPlugin->getNumberOfSessions(&before).isOk());
@@ -571,12 +569,12 @@ UT_ADD_TEST(VTS_L1_Drm, requiredProperties_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, String16("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
 
     const std::array<const char*, 3> properties = {"vendor", "version", "description"};
     for (const char* property : properties) {
-        String16 value;
-        UT_ASSERT_TRUE(drmPlugin->getPropertyString(String16(property), &value).isOk());
+        DrmString value;
+        UT_ASSERT_TRUE(drmPlugin->getPropertyString(fromUtf8(property), &value).isOk());
         UT_ASSERT_TRUE(value.size() > 0);
     }
 }
@@ -602,10 +600,10 @@ UT_ADD_TEST(VTS_L1_Drm, invalidPropertyNames_neg) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, String16("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
 
-    const String16 invalidName;
-    String16 stringValue;
+    const DrmString invalidName;
+    DrmString stringValue;
     std::vector<uint8_t> byteValue;
 
     const Status getStringStatus = drmPlugin->getPropertyString(invalidName, &stringValue);
@@ -618,7 +616,7 @@ UT_ADD_TEST(VTS_L1_Drm, invalidPropertyNames_neg) {
             getByteArrayStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
 
     const Status setStringStatus =
-            drmPlugin->setPropertyString(invalidName, String16("unused"));
+            drmPlugin->setPropertyString(invalidName, fromUtf8("unused"));
     UT_ASSERT_TRUE(hasBinderException(
             setStringStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
 
@@ -648,7 +646,7 @@ UT_ADD_TEST(VTS_L1_Drm, metricsQuery_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, String16("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
 
     std::vector<com::rdk::hal::drm::DrmMetricGroup> metrics;
     const Status status = drmPlugin->getMetrics(&metrics);
@@ -682,11 +680,11 @@ UT_ADD_TEST(VTS_L1_Drm, secureDecoderQueries_pos) {
     bool drmRequiresSecureDecoder = false;
     bool cryptoRequiresSecureDecoder = false;
     UT_ASSERT_TRUE(drmPlugin->requiresSecureDecoder(
-            String16("video/mp4"),
+            fromUtf8("video/mp4"),
             SecurityLevel::DEFAULT,
             &drmRequiresSecureDecoder).isOk());
     UT_ASSERT_TRUE(cryptoPlugin->requiresSecureDecoderComponent(
-            String16("video/mp4"),
+            fromUtf8("video/mp4"),
             &cryptoRequiresSecureDecoder).isOk());
 }
 
