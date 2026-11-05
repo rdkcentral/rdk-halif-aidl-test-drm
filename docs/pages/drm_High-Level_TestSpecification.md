@@ -27,9 +27,10 @@
 This document defines DRM test scope using the audio-decoder documentation
 layout. The DRM-specific level boundaries are retained: L1 validates API
 contracts, L2 validates key exchange and legacy known-vector crypto without
-playback, and full L3 coverage validates encrypted-stream playback. Current L3
-coverage is limited to sample-level decryption, failure handling, and secure
-session capability checks.
+playback, and L3 covers higher-level crypto and playback integration. Current
+L3 coverage is limited to sample-level AVBuffer decryption, failure handling,
+and secure-session capability checks; encrypted-stream playback is not yet
+implemented.
 
 ### References
 
@@ -116,14 +117,31 @@ stream requirements. No production keys or licensed media are packaged here.
 
 ## L2 Test Specification
 
-| Test | Description | HAL APIs |
-|---|---|---|
-| Fixture validation | Validate files, field sizes, and equal ciphertext/plaintext lengths | Test helper only |
-| License request/response | Request a streaming key, provide response, bind session, query status | `openSession`, `getKeyRequest`, `provideKeyResponse`, `setMediaDrmSession`, `queryKeyStatus` |
-| Known-vector decrypt | Compare decrypted bytes with reference plaintext | `IDrmPlugin.decrypt` |
-| Key removal | Reject decrypt after removing the session keys | `removeKeys`, `IDrmPlugin.decrypt` |
-| Invalid init data / closed session | Reject empty init data and requests using a closed ID | `getKeyRequest`, `closeSession` |
-| AIDL AVBuffer decrypt (coverage gap) | Verify decrypt vectors, subsamples, patterns, handle ownership, and negative cases; a sample-level case currently exists in the L3 group | `ICryptoPlugin.decrypt(DecryptArgs)` |
+All six cases below are opt-in. They run only when L2 is enabled and do not
+submit content to a decoder. “Implemented” describes a registered test case;
+it does not imply the test has been run or passed on a target.
+
+| Current test case | Current coverage |
+|---|---|
+| `fixtureValidation_pos` | Checks fixture readability, non-empty data, 16-byte KID/key/IV, and equal ciphertext/plaintext lengths; no HAL call |
+| `keyRequestAndResponse_pos` | Opens a session, requests/provides a streaming key, binds the crypto session, and checks that key status is non-empty |
+| `decryptKnownSample_pos` | Uses legacy `IDrmPlugin.decrypt()` and compares output with known plaintext |
+| `removeKeysRejectsDecrypt_neg` | Checks that legacy decrypt fails after session keys are removed |
+| `invalidInitDataRejected_neg` | Checks that a streaming key request with empty init data fails |
+| `closedSessionRejectsOperations_neg` | Checks that a streaming key request using a closed session fails |
+
+### L2 coverage gaps
+
+The following are not currently implemented as L2 test cases:
+
+- Known-vector decryption through `ICryptoPlugin.decrypt(DecryptArgs)` with
+  AVBuffer handles.
+- AIDL decrypt coverage for subsamples, patterns, bounds, handle ownership and
+  lifetime, and related negative cases.
+- Exact documented error-code assertions for the L2 negative cases.
+
+An AVBuffer sample-decrypt case exists in the L3 group, described below. It
+does not make the L2 AIDL decrypt coverage complete.
 
 Detailed implemented procedures and remaining gaps are in the
 [L2 specification](drm_L2_Low-Level_TestSpecification.md).
@@ -133,22 +151,39 @@ L2 must not submit data to a decoder or claim playback coverage.
 
 ### Prerequisites
 
-L3 requires validated AVBuffer allocation/import and ownership, L2 AIDL decrypt
-coverage, the target demux/media pipeline and decoders, disposable encrypted
-streams, and a defined output oracle. Secure-path claims additionally require
-protected buffers, secure decoder support, and target output-policy validation.
+The current sample-level L3 cases require the DRM service and configured
+fixtures. `decryptSampleWithAvBuffer_pos` and
+`removedKeysAndClosedSessionRejectDecrypt_neg` additionally require AVBuffer
+allocation/import and helper services; they use a pre-demuxed sample and do not
+need a media decoder. Full playback coverage will additionally require validated
+AVBuffer ownership, demux/media pipeline and decoders, encrypted streams, and a
+defined output oracle. Secure-path claims additionally require protected
+buffers, secure decoder support, and target output-policy validation.
 
-### Feature List
+### Phase 1 test cases
 
-| Feature | Required validation |
+All three cases are opt-in. The secure-session case additionally requires its
+secure-session option and target configuration. These tests are sample/API
+checks, not end-to-end playback conformance.
+
+| Current test case | Current coverage |
 |---|---|
-| AVBuffer-backed sample decryption | Compare AIDL decrypt output with an independent plaintext sample |
-| Key removal and closed-session failure | Reject decrypt after keys are removed and after session closure |
-| Secure-session capability | Check configured session security level and secure-decoder requirement |
+| `decryptSampleWithAvBuffer_pos` | Acquires/provides a key, decrypts one configured sample through `ICryptoPlugin.decrypt(DecryptArgs)` using AVBuffer handles, checks byte count and exact plaintext, and cleans up |
+| `removedKeysAndClosedSessionRejectDecrypt_neg` | Checks AIDL decrypt failure after key removal and after session close, with expected service-specific errors |
+| `secureSessionAndDecoderRequirement_pos` | Checks the requested session security level and `requiresSecureDecoderComponent` result|
+
+### Phase 2 L3/L4 playback coverage
+
+These are requirements for future integration tests, not current registered
+test cases:
+
+| Planned feature | Required validation |
+|---|---|
 | DRM metadata detection | Detect scheme/KID and extract init data from a media stream |
-| End-to-end playback | Submit encrypted media through the target pipeline and validate output |
-| Key rotation and license failures | Validate rotation and scheme-specific failure behavior in playback |
+| End-to-end playback | Submit encrypted media through the target pipeline and validate decoded output |
+| Key rotation and playback license failures | Validate rotation and scheme-specific failure behavior during playback |
 | Protected playback/output policy | Verify protected-buffer routing and output restrictions |
-| Full playback cleanup | Release decoder, crypto, session, and buffers across playback failures |
+| Playback cleanup | Release demux, decoder, crypto, session, and buffers across playback success and failure |
+| Multi-session and performance | Exercise concurrent encrypted streams/decoders and measure agreed load, latency, and drop targets |
 
 See the [L3 specification](drm_L3_Low-Level_TestSpecification.md).
