@@ -5,6 +5,9 @@
 # Existing DRM_* environment variables override the corresponding YAML values.
 
 drm:
+  # Single-scheme compatibility mode. For a vendor-specific service suffix,
+  # also set scheme: clearkey, widevine, or playready. uuid may override its
+  # canonical UUID (for example, another supported ClearKey UUID).
   factory_instance: "clearkey"
   aidl_revision: "0.23.0/drm/0.2.0.0"
   service_manager: "android"
@@ -33,8 +36,10 @@ drm:
 
   l2:
     enabled: false
+    security_level: "DEFAULT"
     license:
       mode: "local" # local: file/generated response; http: POST plugin key request.
+      content_type: "application/json"
       url: "http://127.0.0.1:8765/license"
       request_timeout_seconds: 10
     content:
@@ -42,15 +47,21 @@ drm:
       init_data_file: ""
       encrypted_sample_file: ""
       expected_plaintext_file: ""
-      license_response_file: "" # Local mode only; optional, otherwise generate ClearKey JSON.
+      mode: "AES_CTR"
+      pattern:
+        encrypt_blocks: 0
+        skip_blocks: 0
+      license_response_file: "" # Required in local mode except for generated ClearKey JSON.
       kid_hex: ""
       key_hex: ""
       iv_hex: ""
 
   l3:
     enabled: false
+    security_level: "DEFAULT"
     license:
       mode: "local" # local: response file; http: POST plugin key request.
+      content_type: "application/json"
       url: "http://127.0.0.1:8765/license"
       request_timeout_seconds: 10
     sample:
@@ -62,6 +73,7 @@ drm:
       iv_hex: ""
       mime_type: "video/mp4"
       mode: "AES_CTR"
+      codec_mime_type: "video/avc" # Actual sample codec; used for secure-decoder queries.
     secure_session:
       enabled: false
       required_security_level: ""
@@ -74,3 +86,30 @@ drm:
     limitations:
       - "The sample test does not perform demux or decoder playback."
       - "Key rotation and protected-output policy are not implemented."
+
+  # Uncomment to use one-run multi-scheme mode instead of the global
+  # factory/l2/l3 fields above. Copy the full l2/l3 sections into each profile,
+  # with separate scheme-specific fixture paths and license settings.
+  # Global DRM_* fixture overrides are ignored in this mode. Use, for example,
+  # DRM_WIDEVINE_L2_INIT_DATA or DRM_PLAYREADY_L3_LICENSE_URL instead.
+  # Missing required schemes/capabilities fail; optional unsupported ones skip.
+  # A present/advertised optional scheme still fails on operational errors.
+  # schemes:
+  #   clearkey:
+  #     enabled: true
+  #     required: true
+  #     factory_instance: "clearkey"
+  #     l2: { enabled: false }
+  #     l3: { enabled: false }
+  #   widevine:
+  #     enabled: true
+  #     required: false
+  #     factory_instance: "widevine"
+  #     l2: { enabled: false }
+  #     l3: { enabled: false }
+  #   playready:
+  #     enabled: true
+  #     required: false
+  #     factory_instance: "playready"
+  #     l2: { enabled: false }
+  #     l3: { enabled: false }

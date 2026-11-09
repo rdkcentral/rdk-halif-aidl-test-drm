@@ -22,10 +22,19 @@ planned until the target-specific demux, license, decoder, secure-buffer, and
 output-oracle integrations described below are available. L2 vector success
 must not be reported as L3 playback success.
 
-The L3 test bodies return early unless YAML `drm.l3.enabled: true` or
-`DRM_L3_ENABLE=1`; the secure-session case additionally requires YAML
-`drm.l3.secure_session.enabled: true` or `DRM_L3_SECURE_SESSION_ENABLE=1`. A disabled run is
-not L3 validation.
+The same procedures run as `VTS_L3_Drm` (ClearKey), `VTS_L3_DrmWidevine`
+and `VTS_L3_DrmPlayReady`. Each uses its exact configured UUID and independent
+fixtures. Enable `drm.schemes.<scheme>.l3` for a one-run matrix; legacy
+`drm.l3`/`DRM_L3_*` inputs remain supported without a matrix.
+The secure-session case additionally requires `secure_session.enabled: true`.
+Disabled and unsupported optional cases are skipped, not passed. Missing
+required capabilities and operational failures on advertised capabilities fail.
+
+Before loading sample fixtures, the tests open/bind a probe session and query
+DRM/Crypto secure-decoder requirements at the resolved security level. A
+protected-only path skips CPU-readable comparison and the non-secure decrypt
+negative case. Requirements are checked again after licensing. Such skips and
+the secure-session capability case do not validate protected decryption.
 
 ## Acronyms, Terms and Abbreviations
 
@@ -97,6 +106,11 @@ path rules, and runtime configuration behavior.
 | 02 | Submit the encrypted sample through AIDL AVBuffer decryption | KID, IV, mode, subsample, source and destination handles | Decrypt succeeds and reports the expected byte count | Non-secure test buffers |
 | 03 | Compare the output against the expected plaintext | Independent plaintext fixture | Bytes match exactly | Does not validate playback |
 | 04 | Release DRM and AVBuffer resources | Session and allocated handles | Resources are released | Cleanup also runs on failure |
+
+The key-removal/session-close negative case first verifies successful
+decryption, the exact byte count and full plaintext equality. Only then does
+it check failure after removing keys and closing the session, preventing an
+already-broken decrypt path from passing the negative test.
 
 ### Test 2: Removed-Key and Closed-Session Rejection
 

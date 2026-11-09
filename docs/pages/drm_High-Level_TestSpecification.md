@@ -24,13 +24,12 @@
 
 ## Introduction
 
-This document defines DRM test scope using the audio-decoder documentation
-layout. The DRM-specific level boundaries are retained: L1 validates API
-contracts, L2 validates key exchange and legacy known-vector crypto without
-playback, and L3 covers higher-level crypto and playback integration. Current
+This document defines the scope and level boundaries for DRM testing: L1
+validates API contracts, L2 validates key exchange and known-vector crypto
+through AIDL AVBuffers and the retained legacy API without playback, and L3/L4
+covers higher-level crypto and playback integration. Current
 L3 coverage is limited to sample-level AVBuffer decryption, failure handling,
-and secure-session capability checks; encrypted-stream playback is not yet
-implemented.
+and secure-session capability checks.
 
 ### References
 
@@ -47,13 +46,12 @@ The DRM plugin manages sessions, license requests/responses, properties, and
 key status. The crypto plugin binds a DRM session and supplies the AIDL
 AVBuffer decryption path.
 
-The test client, not the HAL, owns any license-server transport. The current
-ClearKey tests generate a response from disposable fixture material or read a
-response file; they do not perform HTTP exchange or vendor provisioning.
+The test client, not the HAL, owns license-server transport. Tests can POST
+the plugin's challenge to a configured test adapter or load an accepted
+response file. ClearKey additionally supports disposable local JSON generation.
+Vendor provisioning and license authentication/wrapping remain external.
 
-Tests adapt applicable Android VTS behavior to RDK's Binder backend and API.
-Android-only offline-license/secure-stop APIs absent from the pinned RDK
-interface cannot be covered without an interface extension.
+Tests adapt applicable Android VTS behaviour to RDK's Binder backend and API.
 
 ## Delivery Phases
 
@@ -64,10 +62,21 @@ group does not by itself mean that end-to-end playback has been implemented.
 ### Phase 1: DRM/Crypto functional bring-up and VTS
 
 **Goal:** Prove that the DRM and Crypto HALs work independently of middleware,
-applications, or a complete audio/video pipeline. ClearKey is the initial
-reference implementation.
+applications, or a complete audio/video pipeline for each DRM scheme under
+test: ClearKey, Widevine and PlayReady. Phase 1 is a scheme-independent HAL
+test solution, not a ClearKey-only solution. ClearKey is the initial software
+reference implementation; the same common license/session and AVBuffer
+test procedures are reused for vendor Widevine and PlayReady implementations,
+subject to their advertised capabilities.
 
-Phase 1 covers:
+Each scheme requires its own configured factory/UUID, supported MIME/security
+level, init data, and accepted test-license flow. AVBuffer sample comparison
+additionally requires matching encrypted-sample, KID/IV and plaintext fixtures.
+Widevine and PlayReady do not use ClearKey JSON licenses or raw-key fixtures.
+The retained legacy `IDrmPlugin.decrypt()` vector tests and empty-init-data
+negative case are ClearKey-specific exceptions, not common requirements.
+
+**Phase 1 covers:**
 
 - Discover the factory and create DRM/Crypto plugins.
 - Exercise DRM session lifecycle, key requests/responses, and key status.
@@ -76,25 +85,38 @@ Phase 1 covers:
 - Compare the decrypted bytes with an independent plaintext reference.
 - Run the VTS without requiring OCDM, a player, or full middleware integration.
 
-The current VTS has L1 factory/session coverage, L2 key-exchange and legacy
-`IDrmPlugin.decrypt()` vector coverage, and an opt-in AVBuffer sample-decrypt
-case under the L3 group. The AVBuffer case is a useful Phase 1 functional
-check, but comprehensive AIDL crypto-path coverage (including buffer
-ownership/lifetime, subsamples, patterns, and negative cases) remains
-incomplete. These tests have not established target conformance merely by
-being present or passing against the software reference service.
+The current VTS has L1 factory/session coverage, common L2 license/session
+coverage for configured ClearKey, Widevine and PlayReady profiles, retained
+ClearKey-only legacy `IDrmPlugin.decrypt()` vectors, opt-in L2 known-vector
+decryption through `ICryptoPlugin.decrypt(DecryptArgs)` with AVBuffer handles,
+and separate sample-level AVBuffer cases under L3. A single run can exercise
+all enabled profiles using their exact UUIDs, services and independent license
+fixtures.
+Optional unadvertised capabilities skip; required capabilities and operational
+failures fail. Secure-decoder-only sample cases skip CPU-readable plaintext
+comparison and do not establish protected-path conformance.
+The L2 AIDL cases check known plaintext, byte counts, subsamples, configured
+modes/patterns, bounds, handle ownership and documented negative errors. They
+remain sample/API tests, not comprehensive vendor qualification or protected
+playback conformance. These tests have not established target conformance
+merely by being present or passing against the software reference service.
 
-**Phase 1 exit criterion:** On the target, VTS can independently open a DRM
-session, acquire/provide a key, bind the session to Crypto, decrypt a known
-AES sample through AVBuffer, and verify exact plaintext output without decoder
-playback.
+**Phase 1 exit criterion:** For each required DRM scheme on the target, VTS
+can independently open a DRM session, acquire/provide a key and bind the
+session to Crypto. Where non-secure sample decryption is supported, it must
+also decrypt a known AES sample through AVBuffer and verify exact plaintext
+output without decoder playback. Record results separately for ClearKey,
+Widevine and PlayReady; a ClearKey pass does not validate the other schemes.
+For protected-only paths, a skipped plaintext comparison is an explicit
+coverage gap, not a decrypt pass or proof of the complete Phase 1 decrypt
+criterion; protected decryption needs a target-approved validation method.
 
 ### Phase 2: DRM integration with the AV pipeline
 
 **Goal:** Connect the Phase 1 DRM/Crypto path to media processing and verify
 encrypted content can be consumed by the target AV pipeline.
 
-Phase 2 covers:
+**Phase 2 covers:**
 
 - Integrate DRM/Crypto, AVBuffer, demux, and audio/video decoder components in
   a small controlled pipeline or test application.
@@ -117,33 +139,36 @@ stream requirements. No production keys or licensed media are packaged here.
 
 ## L2 Test Specification
 
-All six cases below are opt-in. They run only when L2 is enabled and do not
+All cases below are opt-in. They run only when L2 is enabled and do not
 submit content to a decoder. “Implemented” describes a registered test case;
 it does not imply the test has been run or passed on a target.
 
 | Current test case | Current coverage |
-|---|---|
-| `fixtureValidation_pos` | Checks fixture readability, non-empty data, 16-byte KID/key/IV, and equal ciphertext/plaintext lengths; no HAL call |
+|-------------------|------------------|
 | `keyRequestAndResponse_pos` | Opens a session, requests/provides a streaming key, binds the crypto session, and checks that key status is non-empty |
-| `decryptKnownSample_pos` | Uses legacy `IDrmPlugin.decrypt()` and compares output with known plaintext |
-| `removeKeysRejectsDecrypt_neg` | Checks that legacy decrypt fails after session keys are removed |
-| `invalidInitDataRejected_neg` | Checks that a streaming key request with empty init data fails |
-| `closedSessionRejectsOperations_neg` | Checks that a streaming key request using a closed session fails |
+| `decryptKnownSample_pos` | ClearKey-only legacy `IDrmPlugin.decrypt()` comparison with known plaintext |
+| `removeKeysRejectsDecrypt_neg` | ClearKey-only legacy decrypt baseline, then `ERROR_DRM_NO_LICENSE` after key removal |
+| `emptyLicenseResponseRejected_neg` | Common case: successfully request a license, then assert `BAD_VALUE` for an empty response |
+| `invalidInitDataRejected_neg` | ClearKey-only `BAD_VALUE` rejection for empty init data; not assumed for vendor renewals |
+| `closedSessionRejectsOperations_neg` | Asserts `ERROR_DRM_SESSION_NOT_OPENED` for a key request using a closed session |
+| `decryptKnownSampleWithAvBuffer_pos` | Compares `ICryptoPlugin.decrypt(DecryptArgs)` output and byte count with the configured vector; the caller retains and releases AVBuffer handles |
+| `decryptSubsamplesAndPattern_pos` | Exercises multiple and clear/encrypted subsamples for an unpatterned AES-CTR vector; validates configured mode and pattern values against the matching full-sample vector |
+| `decryptBoundsAndInvalidInputsRejected_neg` | Asserts documented errors for short source/destination bounds, invalid AVBuffer handles, and empty subsamples |
+| `removedKeysAndClosedSessionRejectAvBufferDecrypt_neg` | Asserts `ERROR_DRM_NO_LICENSE` after key removal and `ERROR_DRM_SESSION_NOT_OPENED` after session closure |
 
-### L2 coverage gaps
+### L2 AIDL decrypt coverage
 
-The following are not currently implemented as L2 test cases:
+L2 adds known-vector decryption through `ICryptoPlugin.decrypt(DecryptArgs)`
+with AVBuffer handles, alongside the retained legacy `IDrmPlugin.decrypt()`
+case. The AIDL cases cover exact plaintext and byte-count checks, mixed
+clear/encrypted subsamples, supported pattern handling, invalid bounds and
+subsample inputs, and buffer-handle ownership and lifetime. Negative cases
+assert the documented AIDL error codes. Cases are registered per scheme where
+that scheme provides the configured vector and license fixtures.
 
-- Known-vector decryption through `ICryptoPlugin.decrypt(DecryptArgs)` with
-  AVBuffer handles.
-- AIDL decrypt coverage for subsamples, patterns, bounds, handle ownership and
-  lifetime, and related negative cases.
-- Exact documented error-code assertions for the L2 negative cases.
-
-An AVBuffer sample-decrypt case exists in the L3 group, described below. It
-does not make the L2 AIDL decrypt coverage complete.
-
-Detailed implemented procedures and remaining gaps are in the
+An AVBuffer sample-decrypt case also exists in the L3 group. It remains a
+separate higher-level sample/API check; it does not replace the L2 AIDL
+coverage. Detailed procedures and any target-dependent limitations are in the
 [L2 specification](drm_L2_Low-Level_TestSpecification.md).
 L2 must not submit data to a decoder or claim playback coverage.
 

@@ -13,47 +13,56 @@ The detailed procedures are in the
 [L2 Low Level Test Specification](drm_L2_Low-Level_TestSpecification.md).
 L2 must establish that a DRM scheme can acquire usable keys and decrypt known
 test vectors through the RDK AIDL crypto API. It does not play a media stream
-through a decoder. ClearKey tests are opt-in because vectors and keys are
+through a decoder. Tests are opt-in because fixtures and licenses are
 target/test-run inputs, not repository data.
 
 1. Open a session.
-2. Build a known ClearKey init-data blob containing the test KID.
+2. Load valid scheme-specific init data containing the test KID.
 3. Call `getKeyRequest(session, initData, mime, STREAMING, parameters)`.
 4. Acquire a test license response. With `drm.l2.license.mode: "http"`, POST the
    plugin's key request to the configured URL/port. The default `local` mode
-   generates ClearKey JSON from the disposable KID/key or reads a response file.
+   reads a response file, or generates JSON only for ClearKey from a disposable KID/key.
 5. Call `provideKeyResponse(session, response)`.
-6. Call `queryKeyStatus(session)` and verify the test key is usable.
+6. Call `queryKeyStatus(session)` and verify a non-empty status result.
 7. Create a crypto plugin and bind it with `setMediaDrmSession(session)`.
 8. Use `ICryptoPlugin.decrypt(DecryptArgs)` with valid AVBuffer handles to
    decrypt a known AES-CTR test vector and compare it with the known plaintext.
-9. Exercise malformed init data, malformed response, unknown KID, no-license,
-   and closed-session paths; assert the documented error category. Current
-   tests cover empty init data, key removal, and a closed-session request;
-   exact error-code assertions remain pending target validation.
-10. Remove keys and close the session; verify subsequent decryption fails with
-    `ERROR_DRM_NO_LICENSE` or the implementation's documented equivalent.
+9. Run the AIDL negative cases for empty subsamples, short source/destination
+   buffers, invalid handles, no-license after key removal, and use after
+   session closure. They assert `ERROR_DRM_ZERO_SUBSAMPLES`,
+   `ERROR_DRM_FRAME_TOO_LARGE`, `ERROR_DRM_DECRYPT`, `ERROR_DRM_NO_LICENSE`,
+   and `ERROR_DRM_SESSION_NOT_OPENED`, respectively.
+10. Existing session/request negatives also assert `BAD_VALUE` for an empty
+    response and ClearKey empty init data, and
+    `ERROR_DRM_SESSION_NOT_OPENED` for a closed-session key request.
 
-**Coverage limitation:** `decryptKnownSample_pos` currently calls the legacy
-`IDrmPlugin.decrypt()` vector API. It does not call
-`ICryptoPlugin.decrypt(DecryptArgs)` and therefore does not prove the RDK AIDL
-AVBuffer crypto data path. Treat L2 as partial until the AIDL decrypt,
-subsample/pattern, and buffer-lifetime cases are implemented and run.
+The registered L2 AIDL cases check exact plaintext and returned byte count,
+multiple and mixed clear/encrypted subsamples, configured modes/patterns,
+buffer bounds, caller ownership/lifetime, and documented negative errors.
+The retained `decryptKnownSample_pos` and `removeKeysRejectsDecrypt_neg` cases
+continue to cover the legacy `IDrmPlugin.decrypt()` path for ClearKey only.
+AVBuffer sample tests are opt-in and require per-scheme ciphertext, plaintext,
+KID and IV fixtures; they are API/data-path tests, not decoder playback.
 
 Set YAML `drm.l2.enabled: true` (or `DRM_L2_ENABLE=1`) and provide the vector inputs documented
 in [Test Streams and Vector Inputs](drm_TestStreams.md) to execute these cases.
-Disabled cases return early in the current runner; their reported results
-must not be interpreted as executed L2 coverage.
+Disabled and unsupported optional cases are explicitly skipped, not passed.
 
 L2 and L3 support configurable HTTP license exchange; see
 [HTTP license transport](drm_TestStreams.md#http-license-transport).
-Vendor-controlled Widevine or
-PlayReady endpoints require scheme-specific test credentials, request formats,
-and security state and are not exercised by the current ClearKey tests.
+The same common cases are registered for ClearKey, Widevine and PlayReady.
+Use `drm.schemes.<scheme>` profiles for a one-run matrix with separate service,
+UUID, MIME/security level, license and sample inputs; see
+[multi-scheme setup](../../README.md#one-run-clearkey-widevine-and-playready-testing).
+An absent optional service/UUID or unsupported MIME/security level skips; a
+required one fails. Operational errors on advertised capabilities always fail.
+Vendor license authentication/wrapping needs an external approved adapter;
+the device must already be provisioned.
 
 ## L3: sample crypto coverage and end-to-end playback
 
-The implemented opt-in `VTS_L3_Drm` group has three bounded cases:
+The opt-in `VTS_L3_Drm` (ClearKey), `VTS_L3_DrmWidevine` and
+`VTS_L3_DrmPlayReady` groups share three bounded cases:
 
 | Test | Current validation |
 |---|---|
@@ -64,6 +73,8 @@ The implemented opt-in `VTS_L3_Drm` group has three bounded cases:
 These checks do not parse a media container, process KID rotation, feed a
 decoder, or validate playback or protected output. They are useful integration
 checks but are not end-to-end L3 playback conformance.
+Secure-decoder-only paths skip the non-secure byte-comparison cases; a skip
+does not validate decryption into protected buffers.
 
 The full playback flow remains planned:
 
@@ -85,14 +96,17 @@ ClearKey substitute.
 
 ## prerequisites
 
-- Provide a ClearKey UUID, KID, encrypted sample, plaintext, and test key.
-- Provide AVBuffer allocation/import helpers for L2 AIDL decrypt tests.
+- Provide each selected scheme's init data and accepted test license flow;
+  for AVBuffer comparison, also provide its KID, IV, encrypted sample and plaintext.
+- A raw disposable key is needed only for local ClearKey JSON generation.
+- Provide the AVBuffer and AVBufferHelper services required by L2 AIDL decrypt
+  tests; the tests allocate and release their own buffers.
 - Provide an encrypted stream and playback/output validation method for
   end-to-end L3; the current sample test is not a substitute.
 - Execute the synchronized component on a DUT, either through the standalone
   UT-Core binary or the opt-in unified integration.
-- Resolve the public API policy for `DrmErrors` versus `Status`; tests should
-  assert one documented error channel, not both opportunistically.
+- Preserve exact documented service-specific error assertions when adding
+  negative cases; do not treat any failure as an equivalent success.
 
 See the [High Level Test Specification](drm_High-Level_TestSpecification.md)
 for the implementation status and L2/L3 requirements.

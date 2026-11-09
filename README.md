@@ -10,10 +10,11 @@ configured DRM factory is selected with `drm.factory_instance` in YAML (or the
 - **L1** checks DRM AIDL discovery, plugin/session lifecycle, capabilities,
   required properties, and documented invalid-input/session errors. It does
   not require a valid license or media playback.
-- **L2** runs opt-in ClearKey key-exchange and byte-vector tests with
-  `drm.l2.enabled: true` (or `DRM_L2_ENABLE=1`). The current decrypt vector uses the legacy
-  `IDrmPlugin.decrypt()` API; it does not yet validate
-  `ICryptoPlugin.decrypt(DecryptArgs)` with AVBuffer handles.
+- **L2** runs common opt-in license/session tests and, when vector fixtures are
+  configured, known-vector decryption through
+  `ICryptoPlugin.decrypt(DecryptArgs)` with AVBuffer handles for ClearKey,
+  Widevine and PlayReady. The retained ClearKey-only vector also exercises the
+  legacy `IDrmPlugin.decrypt()` API.
 - **L3** has opt-in AVBuffer-backed sample decryption, key-removal/session-close
   rejection, and secure-session capability checks. These are not end-to-end
   playback tests. Full encrypted-stream playback, key rotation, and
@@ -49,7 +50,8 @@ plaintext file and a license response accepted by the selected DRM scheme.
 Set `drm.l3.secure_session.enabled: true` and provide
 `drm.l3.secure_session.required_security_level` to run the secure-session capability case.
 L3 success does not imply decoder playback or protected-output conformance.
-L3 cases return early when disabled; an unconfigured run is not L3 validation.
+Disabled or unsupported optional cases are reported as skipped, not passed.
+An unconfigured run is not L2/L3 validation.
 
 All existing `DRM_L2_*`/`DRM_L3_*` environment variables still override their
 YAML fields, including empty values. No manual exports are needed for YAML-only
@@ -66,6 +68,106 @@ no new YAML dependency. See the
 [YAML/environment mapping](docs/pages/drm_TestStreams.md).
 Do not commit test keys, license responses, or encrypted media.
 
+### One-run ClearKey, Widevine and PlayReady testing
+
+Define `drm.schemes.clearkey`, `drm.schemes.widevine` and/or
+`drm.schemes.playready` to run the same L2/L3 procedures for multiple schemes.
+Each profile accepts `enabled`, `required` (default `true`), `factory_instance`,
+an optional canonical `uuid` override, and its own complete `l2`/`l3` sections.
+For example:
+
+```yaml
+drm:
+  schemes:
+    clearkey:
+      enabled: true
+      required: true
+      factory_instance: "clearkey"
+      l2:
+        enabled: true
+        content:
+          init_data_file: "/fixtures/clearkey/init.bin"
+          mime_type: "video/mp4"
+          license_response_file: "/fixtures/clearkey/license.json"
+          # Supply ciphertext/plaintext/KID/IV for AIDL AVBuffer decryption.
+    widevine:
+      enabled: true
+      required: true
+      factory_instance: "widevine"
+      l2:
+        enabled: true
+        security_level: "SW_SECURE_CRYPTO"
+        license:
+          mode: "http"
+          url: "http://127.0.0.1:8766/license"
+          content_type: "application/octet-stream"
+        content:
+          mime_type: "video/mp4"
+          init_data_file: "/fixtures/widevine/init.bin"
+      l3:
+        enabled: true
+        security_level: "SW_SECURE_CRYPTO"
+        license:
+          mode: "http"
+          url: "http://127.0.0.1:8766/license"
+        sample:
+          mime_type: "video/mp4"
+          codec_mime_type: "video/avc"
+          mode: "AES_CTR"
+          init_data_file: "/fixtures/widevine/init.bin"
+          encrypted_sample_file: "/fixtures/widevine/cipher.bin"
+          expected_plaintext_file: "/fixtures/widevine/plain.bin"
+          kid_hex: "<32 hexadecimal characters>"
+          iv_hex: "<32 hexadecimal characters>"
+    playready:
+      enabled: true
+      required: false
+      factory_instance: "playready"
+      l2:
+        enabled: true
+        content:
+          mime_type: "video/mp4"
+          init_data_file: "/fixtures/playready/init.bin"
+          license_response_file: "/fixtures/playready/license.bin"
+```
+
+Replace the example paths, security levels and license adapters with the
+vendor-approved test setup. Enable and populate `l3` separately for ClearKey
+and PlayReady as needed; missing `l2`/`l3` sections default to disabled.
+Only ClearKey local JSON generation needs a disposable raw key. AIDL AVBuffer
+vector cases need known ciphertext/plaintext/KID/IV inputs per scheme; they
+skip when those vector fields are absent. The ClearKey legacy-vector cases
+continue to require the same vector inputs.
+
+The registered groups are `VTS_L2_DrmClearKey`, `VTS_L2_DrmWidevine`,
+`VTS_L2_DrmPlayReady`, and `VTS_L3_Drm` (ClearKey), `VTS_L3_DrmWidevine`,
+`VTS_L3_DrmPlayReady`. Each uses its configured UUID, never the first
+advertised UUID. Missing optional services, unadvertised UUIDs and unsupported
+MIME/security-level combinations skip; required ones fail. Once a capability
+is advertised, plugin/session/license/decrypt failures fail even for optional
+profiles. Secure-decoder-only sample cases skip CPU-readable comparison,
+including before loading plaintext fixtures; that skip is **not** secure-path
+validation. Enable the separate secure-session capability case where applicable.
+
+In matrix mode, global `drm.factory_instance`, `drm.l2`/`drm.l3` and their
+environment overrides do not supply profile inputs. Use profile-scoped
+overrides, e.g. `DRM_WIDEVINE_L2_LICENSE_URL` or
+`DRM_PLAYREADY_L3_MIME_TYPE`. This prevents ClearKey fixtures leaking into
+vendor tests. Without `drm.schemes`, the existing single-scheme configuration
+and overrides remain supported; `drm.scheme` selects the scheme when its
+factory suffix differs from the scheme name. L1 still checks the first
+available configured factory, not every profile. Initialization requires at
+least one available factory and rejects any missing required factory.
+
+The device must already be provisioned. Static response files work only when
+accepted for the actual session challenge; otherwise use a live test license
+adapter. Vendor authentication, SOAP/JSON wrapping, provisioning transport and
+certification are not implemented by these generic HAL cases.
+For vendor L3 tests, set `sample.codec_mime_type` to the actual elementary
+codec (e.g. `video/avc`), separately from the key-request/container
+`sample.mime_type` (e.g. `video/mp4`). Secure-decoder capability queries require
+the codec MIME. Existing ClearKey configurations retain their MIME fallback.
+
 ### HTTP license exchange (L2 and L3)
 
 Set `license.mode: "http"` under `drm.l2` and/or `drm.l3`:
@@ -78,12 +180,14 @@ license:
 ```
 
 The port is part of the URL; replace `8765` as needed. The test POSTs the
-plugin's actual `getKeyRequest()` bytes as `application/json`, then passes the
+plugin's actual `getKeyRequest()` bytes using `license.content_type`, then passes the
 HTTP response bytes to `provideKeyResponse()`. HTTP errors, timeouts, empty
 responses, and responses over 1 MiB fail the test, without local fallback.
 Redirects and proxies are disabled; HTTPS uses libcurl's normal certificate
-verification. This ClearKey transport does not implement vendor authentication
-or request wrapping.
+verification. The default content type is `application/json` for ClearKey,
+`application/octet-stream` for Widevine and `text/xml` for PlayReady. Override
+it to match the test endpoint. This raw transport does not implement vendor
+authentication or request wrapping; use a vendor-approved adapter when needed.
 
 The default `local` mode preserves L2 generated/file responses and L3 file
 responses. Response-file settings are ignored in HTTP mode.
@@ -121,6 +225,17 @@ locations. These tests use the real UT-Core KVP parser without Binder services
 and check every input mapping, overrides, defaults, reloads, and invalid input.
 The same target also runs loopback HTTP client/server tests using Python 3's
 standard library; `CURL_DIR`/`CURL_LIBS` can select existing host curl dependencies.
+
+With the pinned DRM AIDL/Binder SDK and Google Test libraries available, also run:
+
+```sh
+make -f tests/Makefile test-schemes UT_CORE_DIR=/path/to/ut-core
+```
+
+This uses an in-process fake factory (no Binder device or vendor CDM) to check
+exact UUID selection, missing UUIDs, MIME/security ranges, query errors and null
+plugins. SDK/library paths are overridable in the test Makefile. These host
+checks do not validate Widevine/PlayReady implementations on a target.
 
 ### Reference ClearKey service
 

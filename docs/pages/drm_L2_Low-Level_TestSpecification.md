@@ -7,14 +7,26 @@
 - [Definitions](#definitions)
 - [References](#references)
 - [Level 2 Test Procedure](#level-2-test-procedure)
-- [Pending AIDL Data-Path Coverage](#pending-aidl-data-path-coverage)
+- [AIDL Data-Path Procedures](#aidl-data-path-procedures)
 
 ## Overview
 
-This document describes the six implemented `VTS_L2_DrmClearKey` tests in
+This document describes the shared `VTS_L2_DrmClearKey`,
+`VTS_L2_DrmWidevine` and `VTS_L2_DrmPlayReady` procedures in
 [vts_drm_l2_clearkey_tests.cpp](../../src/vts_drm_l2_clearkey_tests.cpp).
-All require YAML `drm.l2.enabled: true` or `DRM_L2_ENABLE=1`. When disabled, the current cases return early;
-their reported result is not evidence that a key exchange or decrypt ran.
+The source filename and ClearKey group remain for compatibility. Common cases
+validate init-data availability, key exchange/status, empty-response rejection
+and closed-session rejection. Legacy vector decryption/key removal and
+empty-init-data rejection remain ClearKey-only. AIDL AVBuffer vector cases are
+registered for all schemes and skip when that profile has no vector fixtures.
+They check `ICryptoPlugin.decrypt(DecryptArgs)` without submitting data to a
+decoder. ClearKey has eleven registered cases; each vendor group has eight
+common/AIDL cases, plus two legacy cases that skip and no empty-init-data case.
+
+Enable the relevant scheme's L2 section; use `drm.schemes.<scheme>.l2` for the
+one-run matrix described in [setup](../../README.md#one-run-clearkey-widevine-and-playready-testing).
+Disabled profiles and unsupported optional capabilities are skipped, not passed.
+Required capabilities and failures on advertised capabilities fail.
 
 ### Acronyms, Terms and Abbreviations
 
@@ -26,8 +38,8 @@ their reported result is not evidence that a key exchange or decrypt ran.
 ### Definitions
 
 - `ut-core` - RDK testing framework wrapping the test runner.
-- `ClearKeyFixture` - Files and disposable KID/key/IV values supplied through
-  YAML configuration or environment overrides.
+- `DrmFixture` - Scheme-specific init data and optional known-vector inputs.
+  Raw keys are required only for generated ClearKey JSON.
 - `LicensedSession` - Test helper that creates plugins, opens a session,
   requests/provides a key response, binds crypto, and attempts session closure
   on destruction.
@@ -50,9 +62,10 @@ their reported result is not evidence that a key exchange or decrypt ran.
 | Test Case ID | 001 |
 | Priority | High |
 
-**Pre-Conditions:** L2 enabled; valid fixture and selected ClearKey factory.
+**Pre-Conditions:** L2 enabled; scheme-specific init data and selected factory.
 
-**Dependencies:** Supported scheme, openable session, and accepted ClearKey response.
+**Dependencies:** Supported scheme, provisioned device, openable session and
+accepted scheme-specific response or live license adapter.
 
 **User Interaction:** None.
 
@@ -60,9 +73,9 @@ their reported result is not evidence that a key exchange or decrypt ran.
 
 | Variation / Steps | Description | Test Data | Expected Result | Notes |
 |---|---|---|---|---|
-| 01 | Create DRM/crypto plugins and open a session | Advertised UUID, DEFAULT security level | Calls succeed | `LicensedSession` helper |
-| 02 | Generate a streaming request | Session ID, init data, `video/mp4`, STREAMING | Request succeeds and contains bytes | Plugin-generated challenge |
-| 03 | Acquire and provide the license response | HTTP POST in `http` mode; generated JSON or file in `local` mode | `provideKeyResponse` succeeds | Configured URL/port/timeout |
+| 01 | Create DRM/crypto plugins and open a session | Exact configured UUID, configured security level | Calls succeed | Same common case in all three groups |
+| 02 | Generate a streaming request | Session ID, scheme init data, configured MIME, STREAMING | Request succeeds and contains bytes | Plugin-generated challenge |
+| 03 | Acquire and provide the license response | HTTP POST or response file; optional ClearKey-only JSON generation | `provideKeyResponse` succeeds | No raw Widevine/PlayReady key required |
 | 04 | Bind crypto and query key status | Session ID | Binding succeeds; status query succeeds and is non-empty | Does not validate vendor-specific status values |
 
 ### Test 2
@@ -123,10 +136,11 @@ Do not treat it as `ICryptoPlugin.decrypt(DecryptArgs)` conformance.
 | Function Name | `VTS_L2_DrmClearKey.invalidInitDataRejected_neg` |
 | Description | Reject a streaming key request with empty init data. |
 | Test Group | L2 : 02 |
-| Test Case ID | 004 |
+| Test Case ID | 007 |
 | Priority | Medium |
 
-**Pre-Conditions:** L2 enabled; fixture loader succeeds.
+**Pre-Conditions:** ClearKey L2 enabled. This case is not generalized to vendor
+schemes, where empty init data can be valid for renewal.
 
 **Dependencies:** Selected DRM factory and an openable session.
 
@@ -137,7 +151,7 @@ Do not treat it as `ICryptoPlugin.decrypt(DecryptArgs)` conformance.
 | Variation / Steps | Description | Test Data | Expected Result | Notes |
 |---|---|---|---|---|
 | 01 | Create DRM plugin and open session | Advertised UUID, DEFAULT | Calls succeed | No license acquired |
-| 02 | Request streaming key | Session, empty init data, `video/mp4` | Call fails | Exact error code is not yet asserted |
+| 02 | Request streaming key | Session, empty init data, `video/mp4` | Returns `BAD_VALUE` | Documented invalid-parameter error |
 | 03 | Close session | Session ID | Close succeeds | Cleanup |
 
 ### Test 5
@@ -147,7 +161,7 @@ Do not treat it as `ICryptoPlugin.decrypt(DecryptArgs)` conformance.
 | Function Name | `VTS_L2_DrmClearKey.closedSessionRejectsOperations_neg` |
 | Description | Reject key requests after session closure. |
 | Test Group | L2 : 02 |
-| Test Case ID | 005 |
+| Test Case ID | 006 |
 | Priority | Medium |
 
 **Pre-Conditions:** L2 enabled; fixture loader succeeds.
@@ -161,20 +175,55 @@ Do not treat it as `ICryptoPlugin.decrypt(DecryptArgs)` conformance.
 | Variation / Steps | Description | Test Data | Expected Result | Notes |
 |---|---|---|---|---|
 | 01 | Open and close a session | DEFAULT security level | Both calls succeed | Keep closed ID for next step |
-| 02 | Request streaming key | Closed ID, valid init data, `video/mp4` | Call fails | Exact error code is not yet asserted |
+| 02 | Request streaming key | Closed ID, scheme init data, configured MIME | Returns `ERROR_DRM_SESSION_NOT_OPENED` | Shared by all schemes |
 
-## Pending AIDL Data-Path Coverage
+### Test 6: Empty License Response
 
-The following are requirements, not registered tests:
+`emptyLicenseResponseRejected_neg` (Test Case ID 005) is shared by all three groups. Open a
+session at the configured level, successfully request a license using valid
+scheme init data/MIME, then call `provideKeyResponse` with an empty response.
+The call must return `BAD_VALUE`; close the session. No valid license response,
+raw key or encrypted sample is required for this negative case.
 
-- Known-vector decrypt using real `ICryptoPlugin.decrypt(DecryptArgs)` AVBuffer
-  handles with an agreed allocation/import and ownership contract.
-- Correct byte counts, clear/encrypted subsamples, supported modes/patterns,
-  buffer bounds, reuse, and release.
-- Unknown KID, missing license, malformed response, and invalid-buffer errors
-  with exact documented error assertions.
-- Key status semantics beyond a non-empty result, response/request correlation,
-  callback delivery, and optional vendor license-server transport.
+### Test 7: Init-Data Fixture Validation
 
-L2 remains partial until the AIDL crypto path is implemented and verified on a
-DUT. No stream playback is part of these procedures.
+`fixtureValidation_pos` (Test Case ID 001) is shared by all three groups. The configured
+init-data file must be readable and non-empty. Its scheme-specific validity
+is checked by `getKeyRequest` in the operational cases. The legacy ClearKey
+vector cases separately validate 16-byte KID/IV and matching non-empty
+ciphertext/plaintext sizes.
+
+## AIDL Data-Path Procedures
+
+The following cases are registered for ClearKey, Widevine and PlayReady. They
+skip when the scheme profile has no L2 ciphertext, plaintext, KID and IV
+fixtures. A partially configured vector is an error. The fixture's mode
+defaults to `AES_CTR`; `pattern.encrypt_blocks` and `pattern.skip_blocks`
+default to zero. A non-zero pattern must match the supplied ciphertext and
+plaintext. These tests use non-secure AVBuffers only; decrypt operations skip
+when the plugin reports that the license requires protected output.
+
+| Function Name | Test Case ID | Procedure | Required assertion |
+|---|---:|---|---|
+| `decryptKnownSampleWithAvBuffer_pos` | 008 | Provide the test key, place ciphertext in a caller-owned source AVBuffer, decrypt to a distinct destination using configured mode/pattern and one encrypted subsample, compare all output bytes, then read and free the source/destination handles | AIDL succeeds; returned byte count equals plaintext size; output equals the independent plaintext; source remains caller-owned |
+| `decryptSubsamplesAndPattern_pos` | 009 | Decrypt the known vector using two adjacent encrypted subsamples. For an AES-CTR vector with no pattern, also split the vector into an encrypted prefix and clear trailing subsample, with the clear source bytes copied from the plaintext fixture | Both outputs match the complete plaintext and byte count; configured pattern vector is checked with its configured pattern |
+| `decryptBoundsAndInvalidInputsRejected_neg` | 010 | Test an undersized destination, a source buffer shorter than the declared subsamples, empty subsamples, and unallocated source/destination handles | Returns `ERROR_DRM_FRAME_TOO_LARGE`, `ERROR_DRM_DECRYPT`, and `ERROR_DRM_ZERO_SUBSAMPLES` for the corresponding invalid input |
+| `removedKeysAndClosedSessionRejectAvBufferDecrypt_neg` | 011 | Verify a valid decrypt baseline, remove session keys and retry, close the session and retry again | Returns `ERROR_DRM_NO_LICENSE` after key removal and `ERROR_DRM_SESSION_NOT_OPENED` after closure |
+
+`decryptKnownSampleWithAvBuffer_pos` explicitly releases both AVBuffer handles
+after the synchronous AIDL call. The test does not transfer handle ownership
+to the DRM plugin or pass decrypted data to a decoder. The multi-subsample and
+clear-range variation uses AES-CTR so splitting does not change the configured
+fixture's cipher state. Other modes and non-zero patterns are still checked
+through the full-sample, configured-vector case.
+
+Existing negative cases assert their documented status values: empty
+`provideKeyResponse` and ClearKey empty-init-data `getKeyRequest` return
+`BAD_VALUE`; a closed-session key request returns
+`ERROR_DRM_SESSION_NOT_OPENED`; and legacy decrypt after `removeKeys` returns
+`ERROR_DRM_NO_LICENSE`. Vendor empty-init-data requests are not treated as
+invalid because empty init data can be valid for renewal.
+
+The common HAL workflow does not replace vendor qualification or protected-path
+tests. The L3 AVBuffer cases remain separate. No stream playback is part of
+these procedures.
