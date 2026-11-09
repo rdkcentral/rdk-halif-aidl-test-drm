@@ -134,9 +134,13 @@ not a secure CDM and is not compiled into the unified VTS.
 Build it separately from this component directory:
 
 ```sh
-export RDK_HALIF_AIDL_VERSION=0.22.0
+export RDK_HALIF_AIDL_VERSION=0.23.0
 ./build_clearkey.sh Target=linux
 ```
+
+The reference service and DRM VTS target DRM snapshot 0.2.0.0 from AIDL release
+0.23.0, using its UTF-8 `std::string` API directly. The 0.22.0 string API is no
+longer supported. Build the VTS against the same snapshot as the target service.
 
 The script automatically clones the selected AIDL release and pinned Binder
 repository, builds the Binder SDK and DRM AIDL library, and builds a link-time

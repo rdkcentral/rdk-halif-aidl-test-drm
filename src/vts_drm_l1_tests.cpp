@@ -55,6 +55,7 @@
  */
 
 #include "vts_drm.h"
+#include <utils/Errors.h>
 
 #include <com/rdk/hal/drm/BnDrmPluginListener.h>
 #include <com/rdk/hal/drm/DrmErrors.h>
@@ -140,14 +141,14 @@ bool isValidHdcpLevel(HdcpLevel level) {
     return level >= HdcpLevel::HDCP_UNKNOWN && level <= HdcpLevel::HDCP_V2_3;
 }
 
-bool hasBinderException(const Status& status, int32_t exceptionCode) {
-    return !status.isOk() && status.exceptionCode() == exceptionCode;
+bool hasServiceSpecificError(const Status& status, int32_t error) {
+    return !status.isOk() &&
+            status.exceptionCode() == android::binder::Status::EX_SERVICE_SPECIFIC &&
+            status.serviceSpecificErrorCode() == error;
 }
 
 bool hasServiceSpecificError(const Status& status, DrmErrors error) {
-    return !status.isOk() &&
-            status.exceptionCode() == android::binder::Status::EX_SERVICE_SPECIFIC &&
-            status.serviceSpecificErrorCode() == static_cast<int32_t>(error);
+    return hasServiceSpecificError(status, static_cast<int32_t>(error));
 }
 
 }  // namespace
@@ -246,7 +247,7 @@ UT_ADD_TEST(VTS_L1_Drm, createPlugins_pos) {
 UT_ADD_TEST(VTS_L1_Drm, createDrmPluginUnsupportedUuid_neg) {
     sp<IDrmPlugin> plugin;
     const Status status = gDrmFactory->createDrmPlugin(
-            unsupportedUuid(), fromUtf8("com.rdk.vts.drm"), &plugin);
+            unsupportedUuid(), "com.rdk.vts.drm", &plugin);
 
     UT_ASSERT_TRUE(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_CANNOT_HANDLE));
     UT_ASSERT_TRUE(plugin == nullptr);
@@ -335,7 +336,7 @@ UT_ADD_TEST(VTS_L1_Drm, closeSessionTwice_neg) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, "com.rdk.vts.drm", &drmPlugin).isOk());
 
     std::vector<uint8_t> sessionId;
     UT_ASSERT_TRUE(drmPlugin->openSession(SecurityLevel::DEFAULT, &sessionId).isOk());
@@ -357,9 +358,9 @@ UT_ADD_TEST(VTS_L1_Drm, closeSessionTwice_neg) {
  * **Test Procedure:**@n
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
- * |01|Query security level and close with an empty session ID|Empty byte array|Both calls return BAD_VALUE / EX_ILLEGAL_ARGUMENT|Should Pass|
+ * |01|Query security level and close with an empty session ID|Empty byte array|Both calls return BAD_VALUE via EX_SERVICE_SPECIFIC|Should Pass|
  * |02|Bind the crypto plugin to the empty session ID|Empty byte array|Returns ERROR_DRM_SESSION_NOT_OPENED|Should Pass|
- * |03|Request keys with the empty session ID|Empty byte array, video/mp4, STREAMING|Returns BAD_VALUE / EX_ILLEGAL_ARGUMENT|Should Pass|
+ * |03|Request keys with the empty session ID|Empty byte array, video/mp4, STREAMING|Returns BAD_VALUE via EX_SERVICE_SPECIFIC|Should Pass|
  */
 UT_ADD_TEST(VTS_L1_Drm, emptySessionOperations_neg) {
     Uuid uuid;
@@ -374,12 +375,12 @@ UT_ADD_TEST(VTS_L1_Drm, emptySessionOperations_neg) {
     KeyRequest request;
 
     const Status securityLevelStatus = drmPlugin->getSecurityLevel(emptySession, &level);
-    UT_ASSERT_TRUE(hasBinderException(
-            securityLevelStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            securityLevelStatus, android::BAD_VALUE));
 
     const Status closeStatus = drmPlugin->closeSession(emptySession);
-    UT_ASSERT_TRUE(hasBinderException(
-            closeStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            closeStatus, android::BAD_VALUE));
 
     const Status bindStatus = cryptoPlugin->setMediaDrmSession(emptySession);
     UT_ASSERT_TRUE(hasServiceSpecificError(
@@ -388,12 +389,12 @@ UT_ADD_TEST(VTS_L1_Drm, emptySessionOperations_neg) {
     const Status keyRequestStatus = drmPlugin->getKeyRequest(
             emptySession,
             {},
-            fromUtf8("video/mp4"),
+            "video/mp4",
             KeyType::STREAMING,
             {},
             &request);
-    UT_ASSERT_TRUE(hasBinderException(
-            keyRequestStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            keyRequestStatus, android::BAD_VALUE));
 }
 
 /**
@@ -450,15 +451,15 @@ UT_ADD_TEST(VTS_L1_Drm, closedSessionOperations_neg) {
     std::vector<uint8_t> output;
 
     const Status cipherStatus =
-            drmPlugin->setCipherAlgorithm(sessionId, fromUtf8("AES/CBC/PKCS5Padding"));
+            drmPlugin->setCipherAlgorithm(sessionId, "AES/CBC/PKCS5Padding");
     UT_ASSERT_TRUE(hasServiceSpecificError(
             cipherStatus, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
 
-    const Status macStatus = drmPlugin->setMacAlgorithm(sessionId, fromUtf8("HmacSHA256"));
+    const Status macStatus = drmPlugin->setMacAlgorithm(sessionId, "HmacSHA256");
     UT_ASSERT_TRUE(hasServiceSpecificError(
             macStatus, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
 
-    const Status playbackStatus = drmPlugin->setPlaybackId(sessionId, fromUtf8("vts-playback"));
+    const Status playbackStatus = drmPlugin->setPlaybackId(sessionId, "vts-playback");
     UT_ASSERT_TRUE(hasServiceSpecificError(
             playbackStatus, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
 
@@ -501,7 +502,7 @@ UT_ADD_TEST(VTS_L1_Drm, hdcpLevels_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, "com.rdk.vts.drm", &drmPlugin).isOk());
 
     HdcpLevels levels;
     UT_ASSERT_TRUE(drmPlugin->getHdcpLevels(&levels).isOk());
@@ -531,7 +532,7 @@ UT_ADD_TEST(VTS_L1_Drm, numberOfSessions_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, "com.rdk.vts.drm", &drmPlugin).isOk());
 
     NumberOfSessions before;
     UT_ASSERT_TRUE(drmPlugin->getNumberOfSessions(&before).isOk());
@@ -569,12 +570,12 @@ UT_ADD_TEST(VTS_L1_Drm, requiredProperties_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, "com.rdk.vts.drm", &drmPlugin).isOk());
 
     const std::array<const char*, 3> properties = {"vendor", "version", "description"};
     for (const char* property : properties) {
-        DrmString value;
-        UT_ASSERT_TRUE(drmPlugin->getPropertyString(fromUtf8(property), &value).isOk());
+        std::string value;
+        UT_ASSERT_TRUE(drmPlugin->getPropertyString(property, &value).isOk());
         UT_ASSERT_TRUE(value.size() > 0);
     }
 }
@@ -591,8 +592,8 @@ UT_ADD_TEST(VTS_L1_Drm, requiredProperties_pos) {
  * **Test Procedure:**@n
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
- * |01|Call string and byte-array getters with an empty name|Empty string|Both calls return BAD_VALUE / EX_ILLEGAL_ARGUMENT|Should Pass|
- * |02|Call string and byte-array setters with an empty name|Empty string, disposable values|Both calls return BAD_VALUE / EX_ILLEGAL_ARGUMENT|No property is changed|
+ * |01|Call string and byte-array getters with an empty name|Empty string|Both calls return BAD_VALUE via EX_SERVICE_SPECIFIC|Should Pass|
+ * |02|Call string and byte-array setters with an empty name|Empty string, disposable values|Both calls return BAD_VALUE via EX_SERVICE_SPECIFIC|No property is changed|
  */
 UT_ADD_TEST(VTS_L1_Drm, invalidPropertyNames_neg) {
     Uuid uuid;
@@ -600,30 +601,30 @@ UT_ADD_TEST(VTS_L1_Drm, invalidPropertyNames_neg) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, "com.rdk.vts.drm", &drmPlugin).isOk());
 
-    const DrmString invalidName;
-    DrmString stringValue;
+    const std::string invalidName;
+    std::string stringValue;
     std::vector<uint8_t> byteValue;
 
     const Status getStringStatus = drmPlugin->getPropertyString(invalidName, &stringValue);
-    UT_ASSERT_TRUE(hasBinderException(
-            getStringStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            getStringStatus, android::BAD_VALUE));
 
     const Status getByteArrayStatus =
             drmPlugin->getPropertyByteArray(invalidName, &byteValue);
-    UT_ASSERT_TRUE(hasBinderException(
-            getByteArrayStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            getByteArrayStatus, android::BAD_VALUE));
 
     const Status setStringStatus =
-            drmPlugin->setPropertyString(invalidName, fromUtf8("unused"));
-    UT_ASSERT_TRUE(hasBinderException(
-            setStringStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
+            drmPlugin->setPropertyString(invalidName, "unused");
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            setStringStatus, android::BAD_VALUE));
 
     const Status setByteArrayStatus =
             drmPlugin->setPropertyByteArray(invalidName, {});
-    UT_ASSERT_TRUE(hasBinderException(
-            setByteArrayStatus, android::binder::Status::EX_ILLEGAL_ARGUMENT));
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            setByteArrayStatus, android::BAD_VALUE));
 }
 
 /**
@@ -646,7 +647,7 @@ UT_ADD_TEST(VTS_L1_Drm, metricsQuery_pos) {
 
     sp<IDrmPlugin> drmPlugin;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drmPlugin).isOk());
+            uuid, "com.rdk.vts.drm", &drmPlugin).isOk());
 
     std::vector<com::rdk::hal::drm::DrmMetricGroup> metrics;
     const Status status = drmPlugin->getMetrics(&metrics);
@@ -680,11 +681,11 @@ UT_ADD_TEST(VTS_L1_Drm, secureDecoderQueries_pos) {
     bool drmRequiresSecureDecoder = false;
     bool cryptoRequiresSecureDecoder = false;
     UT_ASSERT_TRUE(drmPlugin->requiresSecureDecoder(
-            fromUtf8("video/mp4"),
+            "video/mp4",
             SecurityLevel::DEFAULT,
             &drmRequiresSecureDecoder).isOk());
     UT_ASSERT_TRUE(cryptoPlugin->requiresSecureDecoderComponent(
-            fromUtf8("video/mp4"),
+            "video/mp4",
             &cryptoRequiresSecureDecoder).isOk());
 }
 

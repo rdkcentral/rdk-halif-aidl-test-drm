@@ -205,7 +205,7 @@ public:
         if (!drm->getKeyRequest(
                     session,
                     fixture.initData,
-                    fromUtf8("video/mp4"),
+                    "video/mp4",
                     KeyType::STREAMING,
                     {},
                     &request).isOk() ||
@@ -385,14 +385,14 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, invalidInitDataRejected_neg) {
     UT_ASSERT_TRUE(vts_drm_getSupportedUuid(&uuid).isOk());
     sp<IDrmPlugin> drm;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drm).isOk());
+            uuid, "com.rdk.vts.drm", &drm).isOk());
     std::vector<uint8_t> session;
     UT_ASSERT_TRUE(drm->openSession(
             com::rdk::hal::drm::SecurityLevel::DEFAULT, &session).isOk());
 
     KeyRequest request;
     UT_ASSERT_FALSE(drm->getKeyRequest(
-            session, {}, fromUtf8("video/mp4"), KeyType::STREAMING, {}, &request).isOk());
+            session, {}, "video/mp4", KeyType::STREAMING, {}, &request).isOk());
     UT_ASSERT_TRUE(drm->closeSession(session).isOk());
 }
 
@@ -421,7 +421,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, closedSessionRejectsOperations_neg) {
     UT_ASSERT_TRUE(vts_drm_getSupportedUuid(&uuid).isOk());
     sp<IDrmPlugin> drm;
     UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), &drm).isOk());
+            uuid, "com.rdk.vts.drm", &drm).isOk());
     std::vector<uint8_t> session;
     UT_ASSERT_TRUE(drm->openSession(
             com::rdk::hal::drm::SecurityLevel::DEFAULT, &session).isOk());
@@ -429,7 +429,7 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, closedSessionRejectsOperations_neg) {
 
     KeyRequest request;
     UT_ASSERT_FALSE(drm->getKeyRequest(
-            session, fixture.initData, fromUtf8("video/mp4"), KeyType::STREAMING, {}, &request).isOk());
+            session, fixture.initData, "video/mp4", KeyType::STREAMING, {}, &request).isOk());
 }
 
 /** @} */ // End of DRM_HALTEST_L2_CLEARKEY

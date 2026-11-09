@@ -6,7 +6,7 @@
 
 drm:
   factory_instance: "clearkey"
-  aidl_revision: "0.22.0/drm/0.1.0.0"
+  aidl_revision: "0.23.0/drm/0.2.0.0"
   service_manager: "android"
   required_instances:
     - name: "clearkey"

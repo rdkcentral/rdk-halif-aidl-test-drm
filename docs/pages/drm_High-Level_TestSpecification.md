@@ -34,7 +34,7 @@ implemented.
 
 ### References
 
-- [RDK DRM AIDL 0.22.0 / interface 0.1.0.0](https://github.com/rdkcentral/rdk-halif-aidl/tree/0.22.0/drm/0.1.0.0/com/rdk/hal/drm)
+- [RDK DRM AIDL 0.23.0 / interface 0.2.0.0](https://github.com/rdkcentral/rdk-halif-aidl/tree/0.23.0/drm/0.2.0.0/com/rdk/hal/drm)
 - [Android DRM AIDL VTS](https://android.googlesource.com/platform/hardware/interfaces/+/refs/heads/main/drm/aidl/vts/)
 - [DRM API coverage matrix](drm_TestSpecification.md)
 - [L2 Low Level Test Specification](drm_L2_Low-Level_TestSpecification.md)

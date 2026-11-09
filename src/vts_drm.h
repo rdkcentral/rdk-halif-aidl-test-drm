@@ -64,7 +64,6 @@
 #include <com/rdk/hal/drm/ICryptoPlugin.h>
 #include <com/rdk/hal/drm/IDrmPlugin.h>
 
-#include "drm_string_compat.h"
 #include <ut.h>
 #include <ut_log.h>
 #include "vts_drm_parse_testconfig.h"
@@ -79,8 +78,6 @@ using com::rdk::hal::drm::ICryptoPlugin;
 using com::rdk::hal::drm::IDrmFactory;
 using com::rdk::hal::drm::IDrmPlugin;
 using com::rdk::hal::drm::Uuid;
-using ::rdk::drm_compat::DrmString;
-using ::rdk::drm_compat::fromUtf8;
 
 extern sp<IDrmFactory> gDrmFactory;
 extern std::string gDrmFactoryServiceName;

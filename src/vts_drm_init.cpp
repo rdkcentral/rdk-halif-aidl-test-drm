@@ -111,7 +111,7 @@ Status vts_drm_createPlugins(
         sp<IDrmPlugin>* drmPlugin,
         sp<ICryptoPlugin>* cryptoPlugin) {
     Status status = gDrmFactory->createDrmPlugin(
-            uuid, fromUtf8("com.rdk.vts.drm"), drmPlugin);
+            uuid, "com.rdk.vts.drm", drmPlugin);
     if (!status.isOk()) {
         return status;
     }
