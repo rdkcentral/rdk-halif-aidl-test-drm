@@ -1,0 +1,124 @@
+# Target-specific DRM VTS configuration.
+# Replace placeholders before running against a DUT.
+# Loaded at DRM initialization using UT-Core KVP. Relative fixture paths are
+# resolved from the working directory, as in the other VTS modules.
+# Existing DRM_* environment variables override the corresponding YAML values.
+
+drm:
+  # Single-scheme compatibility mode. For a vendor-specific service suffix,
+  # also set scheme: clearkey, widevine, or playready. uuid may override its
+  # canonical UUID (for example, another supported ClearKey UUID).
+  factory_instance: "clearkey"
+  aidl_revision: "0.23.0/drm/0.2.0.0"
+  service_manager: "android"
+  required_instances:
+    - name: "clearkey"
+      required: true
+      uuid: "e2719d58-a985-b3c9-781a-b030af78d30e"
+      scheme: "clearkey"
+  optional_instances:
+    - name: "widevine"
+      required: false
+      uuid: "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
+      scheme: "widevine"
+    - name: "playready"
+      required: false
+      uuid: "9a04f079-9840-4286-ab92-e65be0885f95"
+      scheme: "playready"
+
+  l1:
+    app_package_name: "com.rdk.vts.drm"
+    requested_security_level: "DEFAULT"
+    required_properties:
+      - "vendor"
+      - "version"
+      - "description"
+
+  provisioning:
+    enabled: false
+    url: "" # Set to an approved test provisioning endpoint before enabling.
+    content_type: "application/octet-stream"
+    request_timeout_seconds: 10
+    certificate_type: "X.509"
+    certificate_authority: ""
+
+  l2:
+    enabled: false
+    security_level: "DEFAULT"
+    license:
+      mode: "local" # local: file/generated response; http: POST plugin key request.
+      content_type: "application/json"
+      url: "http://127.0.0.1:8765/license"
+      request_timeout_seconds: 10
+    content:
+      mime_type: "video/mp4"
+      init_data_file: ""
+      encrypted_sample_file: ""
+      expected_plaintext_file: ""
+      mode: "AES_CTR"
+      pattern:
+        encrypt_blocks: 0
+        skip_blocks: 0
+      license_response_file: "" # Required in local mode except for generated ClearKey JSON.
+      offline_license_response_file: "" # Optional persistent-license response for KeyType::OFFLINE.
+      kid_hex: ""
+      key_hex: ""
+      iv_hex: ""
+
+  l3:
+    enabled: false
+    security_level: "DEFAULT"
+    license:
+      mode: "local" # local: response file; http: POST plugin key request.
+      content_type: "application/json"
+      url: "http://127.0.0.1:8765/license"
+      request_timeout_seconds: 10
+    sample:
+      init_data_file: ""
+      encrypted_sample_file: ""
+      expected_plaintext_file: ""
+      license_response_file: ""
+      kid_hex: ""
+      iv_hex: ""
+      mime_type: "video/mp4"
+      mode: "AES_CTR"
+      codec_mime_type: "video/avc" # Actual sample codec; used for secure-decoder queries.
+    secure_session:
+      enabled: false
+      required_security_level: ""
+      supported_values:
+        - "SW_SECURE_CRYPTO"
+        - "SW_SECURE_DECODE"
+        - "HW_SECURE_CRYPTO"
+        - "HW_SECURE_DECODE"
+        - "HW_SECURE_ALL"
+    limitations:
+      - "The sample test does not perform demux or decoder playback."
+      - "Key rotation and protected-output policy are not implemented."
+
+  # Uncomment to use one-run multi-scheme mode instead of the global
+  # factory/l2/l3 fields above. Copy the full l2/l3 sections into each profile,
+  # with separate scheme-specific fixture paths and license settings.
+  # Global DRM_* fixture overrides are ignored in this mode. Use, for example,
+  # DRM_WIDEVINE_L2_INIT_DATA or DRM_PLAYREADY_L3_LICENSE_URL instead.
+  # Missing required schemes/capabilities fail; optional unsupported ones skip.
+  # A present/advertised optional scheme still fails on operational errors.
+  # schemes:
+  #   clearkey:
+  #     enabled: true
+  #     required: true
+  #     factory_instance: "clearkey"
+  #     l2: { enabled: false }
+  #     l3: { enabled: false }
+  #   widevine:
+  #     enabled: true
+  #     required: false
+  #     factory_instance: "widevine"
+  #     l2: { enabled: false }
+  #     l3: { enabled: false }
+  #   playready:
+  #     enabled: true
+  #     required: false
+  #     factory_instance: "playready"
+  #     l2: { enabled: false }
+  #     l3: { enabled: false }
