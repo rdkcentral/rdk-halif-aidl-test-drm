@@ -37,14 +37,15 @@
  * @{
  * @parblock
  *
- * ### L2 ClearKey Test Cases for DRM HAL :
+ * ### Scheme-independent L2 license/session tests and legacy ClearKey vectors :
  *
- * These opt-in tests exercise ClearKey license response handling, key status,
- * and known-vector decryption without decoder playback. Test key and content
- * fixtures are supplied by YAML configuration or environment overrides.
+ * The common cases exercise license response handling and session/key status
+ * for each configured scheme. L2 checks known vectors through both the legacy
+ * ClearKey API and the AIDL AVBuffer path; L3 remains a separate sample-level
+ * AVBuffer group.
  *
- * **Pre-Conditions:** Enable L2 through YAML or environment and provide ClearKey fixture inputs@n
- * **Dependencies:** ClearKey DRM factory and disposable test vectors@n
+ * **Pre-Conditions:** Enable each scheme's L2 cases and provide scheme-specific fixtures@n
+ * **Dependencies:** Selected DRM factory, provisioned device and test license inputs@n
  *
  * @endparblock
  */
@@ -55,39 +56,110 @@
  */
 
 #include "vts_drm.h"
+#include "vts_drm_avbuffer.h"
 #include "vts_drm_license.h"
 
+#include <com/rdk/hal/drm/DecryptArgs.h>
+#include <com/rdk/hal/drm/DrmErrors.h>
+#include <com/rdk/hal/drm/BnDrmPluginListener.h>
+#include <com/rdk/hal/drm/EventType.h>
+#include <com/rdk/hal/drm/IDrmPluginListener.h>
 #include <com/rdk/hal/drm/KeyRequest.h>
 #include <com/rdk/hal/drm/KeyStatus.h>
+#include <com/rdk/hal/drm/KeyStatusType.h>
 #include <com/rdk/hal/drm/KeyType.h>
+#include <com/rdk/hal/drm/Mode.h>
+#include <com/rdk/hal/drm/SubSample.h>
+#include <utils/Errors.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
+#include <cerrno>
+#include <climits>
+#include <condition_variable>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
+#include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
+using android::binder::Status;
+using com::rdk::hal::drm::DecryptArgs;
+using com::rdk::hal::drm::DrmErrors;
+using com::rdk::hal::drm::EventType;
+using com::rdk::hal::drm::IDrmPluginListener;
+using com::rdk::hal::drm::KeyStatus;
+using com::rdk::hal::drm::KeyStatusType;
+using com::rdk::hal::drm::Mode;
+using com::rdk::hal::drm::SubSample;
 using com::rdk::hal::drm::KeyRequest;
 using com::rdk::hal::drm::KeyType;
-
-UT_ADD_TEST_TO_GROUP(VTS_L2_DrmClearKey, UT_TESTS_L2)
+using vts_drm::SampleBuffers;
 
 namespace {
 
-struct ClearKeyFixture {
+struct DrmFixture {
     std::vector<uint8_t> initData;
     std::vector<uint8_t> ciphertext;
     std::vector<uint8_t> plaintext;
     std::vector<uint8_t> kid;
     std::vector<uint8_t> key;
     std::vector<uint8_t> iv;
-    std::vector<uint8_t> licenseResponse;
+    Mode mode = Mode::AES_CTR;
+    int32_t patternEncryptBlocks = 0;
+    int32_t patternSkipBlocks = 0;
 };
 
-bool enabled() {
-    const char* value = vts_drm_config_value("DRM_L2_ENABLE");
-    return value != nullptr && std::string(value) == "1";
+bool hasServiceSpecificError(const Status& status, DrmErrors error) {
+    return !status.isOk() &&
+            status.exceptionCode() == Status::EX_SERVICE_SPECIFIC &&
+            status.serviceSpecificErrorCode() == static_cast<int32_t>(error);
+}
+
+bool hasServiceSpecificErrorCode(const Status& status, int32_t error) {
+    return !status.isOk() &&
+            status.exceptionCode() == Status::EX_SERVICE_SPECIFIC &&
+            status.serviceSpecificErrorCode() == error;
+}
+
+bool parseMode(const char* value, Mode* mode) {
+    if (value == nullptr || value[0] == '\0' || std::string(value) == "AES_CTR") {
+        *mode = Mode::AES_CTR;
+        return true;
+    }
+    if (std::string(value) == "AES_CBC") {
+        *mode = Mode::AES_CBC;
+        return true;
+    }
+    if (std::string(value) == "AES_CBC_CTS") {
+        *mode = Mode::AES_CBC_CTS;
+        return true;
+    }
+    UT_LOG_ERROR("DRM_L2_MODE must be AES_CTR, AES_CBC, or AES_CBC_CTS");
+    return false;
+}
+
+bool parseNonNegativeInt32(const char* variable, int32_t* output) {
+    const char* value = vts_drm_config_value(variable);
+    if (value == nullptr || value[0] == '\0') {
+        UT_LOG_ERROR("%s must be a non-negative integer", variable);
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (errno == ERANGE || end == value || *end != '\0' || parsed < 0 ||
+            parsed > INT32_MAX) {
+        UT_LOG_ERROR("%s must be a non-negative 32-bit integer", variable);
+        return false;
+    }
+    *output = static_cast<int32_t>(parsed);
+    return true;
 }
 
 bool readFile(const char* variable, std::vector<uint8_t>* data) {
@@ -152,24 +224,48 @@ std::string base64Url(const std::vector<uint8_t>& data) {
     return result;
 }
 
-bool loadFixture(ClearKeyFixture* fixture) {
-    if (!enabled()) {
-        UT_LOG_INFO("L2 ClearKey tests disabled; enable drm.l2.enabled or set DRM_L2_ENABLE=1");
-        return false;
-    }
-    return readFile("DRM_L2_INIT_DATA", &fixture->initData) &&
-            readFile("DRM_L2_CIPHERTEXT", &fixture->ciphertext) &&
-            readFile("DRM_L2_PLAINTEXT", &fixture->plaintext) &&
-            decodeHex("DRM_L2_KID_HEX", &fixture->kid) &&
-            decodeHex("DRM_L2_KEY_HEX", &fixture->key) &&
-            decodeHex("DRM_L2_IV_HEX", &fixture->iv) &&
-            fixture->kid.size() == 16 &&
-            fixture->key.size() == 16 &&
-            fixture->iv.size() == 16 &&
-            fixture->ciphertext.size() == fixture->plaintext.size();
+bool loadFixture(DrmFixture* fixture) {
+    return readFile("DRM_L2_INIT_DATA", &fixture->initData);
 }
 
-bool loadLicenseResponse(const ClearKeyFixture& fixture,
+bool loadVector(DrmFixture* fixture) {
+    if (!loadFixture(fixture) ||
+            !readFile("DRM_L2_CIPHERTEXT", &fixture->ciphertext) ||
+            !readFile("DRM_L2_PLAINTEXT", &fixture->plaintext) ||
+            !decodeHex("DRM_L2_KID_HEX", &fixture->kid) ||
+            !decodeHex("DRM_L2_IV_HEX", &fixture->iv) ||
+            !parseMode(vts_drm_config_value("DRM_L2_MODE"), &fixture->mode) ||
+            !parseNonNegativeInt32(
+                    "DRM_L2_PATTERN_ENCRYPT_BLOCKS", &fixture->patternEncryptBlocks) ||
+            !parseNonNegativeInt32(
+                    "DRM_L2_PATTERN_SKIP_BLOCKS", &fixture->patternSkipBlocks)) {
+        return false;
+    }
+    if (fixture->kid.size() != 16 || fixture->iv.size() != 16 ||
+            fixture->ciphertext.size() != fixture->plaintext.size()) {
+        UT_LOG_ERROR("L2 vector requires 16-byte KID/IV and matching ciphertext/plaintext sizes");
+        return false;
+    }
+    if (fixture->ciphertext.size() >
+            static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+        UT_LOG_ERROR("L2 sample exceeds the AVBuffer API size limit");
+        return false;
+    }
+    return true;
+}
+
+bool l2VectorConfigured() {
+    const char* variables[] = {
+        "DRM_L2_CIPHERTEXT", "DRM_L2_PLAINTEXT", "DRM_L2_KID_HEX", "DRM_L2_IV_HEX"};
+    size_t configured = 0;
+    for (const char* variable : variables) {
+        const char* value = vts_drm_config_value(variable);
+        configured += value != nullptr && value[0] != '\0';
+    }
+    return configured != 0;
+}
+
+bool loadLicenseResponse(
         const std::vector<uint8_t>& request, std::vector<uint8_t>* response) {
     bool useHttp = false;
     if (!vts_drm_license_uses_http("L2", &useHttp)) {
@@ -182,6 +278,19 @@ bool loadLicenseResponse(const ClearKeyFixture& fixture,
     if (responsePath != nullptr && responsePath[0] != '\0') {
         return readFile("DRM_L2_LICENSE_RESPONSE", response);
     }
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_LOG_ERROR("Widevine/PlayReady require a license response file or HTTP license adapter");
+        return false;
+    }
+    DrmFixture fixture;
+    if (!decodeHex("DRM_L2_KID_HEX", &fixture.kid) ||
+            !decodeHex("DRM_L2_KEY_HEX", &fixture.key)) {
+        return false;
+    }
+    if (fixture.kid.size() != 16 || fixture.key.size() != 16) {
+        UT_LOG_ERROR("Generated ClearKey response requires a 16-byte KID and key");
+        return false;
+    }
     const std::string json = "{\"keys\":[{\"kty\":\"oct\",\"kid\":\"" +
             base64Url(fixture.kid) + "\",\"k\":\"" + base64Url(fixture.key) +
             "\"}],\"type\":\"temporary\"}";
@@ -189,44 +298,111 @@ bool loadLicenseResponse(const ClearKeyFixture& fixture,
     return true;
 }
 
+bool loadOfflineLicenseResponse(
+        const std::vector<uint8_t>& request, std::vector<uint8_t>* response) {
+    bool useHttp = false;
+    if (!vts_drm_license_uses_http("L2", &useHttp)) {
+        return false;
+    }
+    if (useHttp) {
+        return vts_drm_request_http_license("L2", request, response);
+    }
+    const char* responsePath =
+            vts_drm_config_value("DRM_L2_OFFLINE_LICENSE_RESPONSE");
+    if (responsePath != nullptr && responsePath[0] != '\0') {
+        return readFile("DRM_L2_OFFLINE_LICENSE_RESPONSE", response);
+    }
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_LOG_INFO("SKIP: offline license response fixture is not configured");
+        return false;
+    }
+    DrmFixture fixture;
+    if (!decodeHex("DRM_L2_KID_HEX", &fixture.kid) ||
+            !decodeHex("DRM_L2_KEY_HEX", &fixture.key)) {
+        return false;
+    }
+    if (fixture.kid.size() != 16 || fixture.key.size() != 16) {
+        UT_LOG_ERROR("Generated ClearKey offline response requires a 16-byte KID and key");
+        return false;
+    }
+    const std::string json = "{\"keys\":[{\"kty\":\"oct\",\"kid\":\"" +
+            base64Url(fixture.kid) + "\",\"k\":\"" + base64Url(fixture.key) +
+            "\"}],\"type\":\"persistent-license\"}";
+    response->assign(json.begin(), json.end());
+    return true;
+}
+
 class LicensedSession {
 public:
-    bool open(const ClearKeyFixture& fixture) {
+    bool openSession() {
         Uuid uuid;
         if (!vts_drm_getSupportedUuid(&uuid).isOk() ||
                 !vts_drm_createPlugins(uuid, &drm, &crypto).isOk()) {
+            UT_LOG_ERROR("Unable to create DRM/Crypto plugins");
             return false;
         }
-        if (!drm->openSession(
-                    com::rdk::hal::drm::SecurityLevel::DEFAULT, &session).isOk()) {
+        com::rdk::hal::drm::SecurityLevel level;
+        if (!vts_drm_parse_security_level(vts_drm_config_value("DRM_L2_SECURITY_LEVEL"), &level)) {
+            return false;
+        }
+        if (!drm->openSession(level, &session).isOk() || session.empty()) {
+            UT_LOG_ERROR("Unable to open DRM session (provision the target before running)");
+            return false;
+        }
+        return true;
+    }
+
+    bool open(
+            const DrmFixture& fixture,
+            const sp<IDrmPluginListener>& listener = nullptr) {
+        if (!openSession()) {
+            return false;
+        }
+        if (listener != nullptr && !drm->setListener(listener).isOk()) {
+            UT_LOG_ERROR("Unable to register DRM plugin listener");
             return false;
         }
         KeyRequest request;
         if (!drm->getKeyRequest(
                     session,
                     fixture.initData,
-                    "video/mp4",
+                    vts_drm_config_value("DRM_L2_MIME_TYPE"),
                     KeyType::STREAMING,
                     {},
                     &request).isOk() ||
                 request.request.empty()) {
+            UT_LOG_ERROR("Unable to create a streaming key request");
             return false;
         }
         std::vector<uint8_t> response;
-        if (!loadLicenseResponse(fixture, request.request, &response)) {
+        if (!loadLicenseResponse(request.request, &response)) {
             return false;
         }
         com::rdk::hal::drm::KeySetId keySetId;
         if (!drm->provideKeyResponse(session, response, &keySetId).isOk()) {
+            UT_LOG_ERROR("DRM license response was rejected");
             return false;
         }
-        return crypto->setMediaDrmSession(session).isOk();
+        if (!crypto->setMediaDrmSession(session).isOk()) {
+            UT_LOG_ERROR("Unable to bind DRM session to Crypto");
+            return false;
+        }
+        return true;
+    }
+
+    bool close() {
+        if (drm != nullptr && !session.empty()) {
+            if (!drm->closeSession(session).isOk()) {
+                UT_LOG_ERROR("Unable to close DRM session");
+                return false;
+            }
+            session.clear();
+        }
+        return true;
     }
 
     ~LicensedSession() {
-        if (drm != nullptr && !session.empty()) {
-            drm->closeSession(session);
-        }
+        close();
     }
 
     sp<IDrmPlugin> drm;
@@ -234,67 +410,509 @@ public:
     std::vector<uint8_t> session;
 };
 
+class DrmTestListener final : public com::rdk::hal::drm::BnDrmPluginListener {
+public:
+    Status onEvent(
+            EventType eventType,
+            const std::vector<uint8_t>& sessionId,
+            const std::vector<uint8_t>& data) override {
+        std::lock_guard<std::mutex> lock(mMutex);
+        mEventType = eventType;
+        mEventSessionId = sessionId;
+        mEventData = data;
+        mHasEvent = true;
+        mCondition.notify_all();
+        return Status::ok();
+    }
+
+    Status onExpirationUpdate(
+            const std::vector<uint8_t>& sessionId, int64_t expiryTimeInMs) override {
+        std::lock_guard<std::mutex> lock(mMutex);
+        mExpirationSessionId = sessionId;
+        mExpiryTimeInMs = expiryTimeInMs;
+        mHasExpirationUpdate = true;
+        mCondition.notify_all();
+        return Status::ok();
+    }
+
+    Status onKeysChange(
+            const std::vector<uint8_t>& sessionId,
+            const std::vector<KeyStatus>& keyStatusList,
+            bool hasNewUsableKey) override {
+        std::lock_guard<std::mutex> lock(mMutex);
+        mKeysSessionId = sessionId;
+        mKeyStatusList = keyStatusList;
+        mHasNewUsableKey = hasNewUsableKey;
+        mHasKeysChange = true;
+        mCondition.notify_all();
+        return Status::ok();
+    }
+
+    Status onSessionLostState(const std::vector<uint8_t>& sessionId) override {
+        std::lock_guard<std::mutex> lock(mMutex);
+        mLostSessionId = sessionId;
+        mHasSessionLost = true;
+        mCondition.notify_all();
+        return Status::ok();
+    }
+
+    bool waitForLicenseCallbacks() {
+        std::unique_lock<std::mutex> lock(mMutex);
+        return mCondition.wait_for(lock, std::chrono::seconds(5), [this] {
+            return mHasEvent && mHasExpirationUpdate && mHasKeysChange;
+        });
+    }
+
+    bool licenseCallbacksMatch(
+            const std::vector<uint8_t>& sessionId, const std::vector<uint8_t>& keyId) {
+        std::lock_guard<std::mutex> lock(mMutex);
+        return mEventType == EventType::VENDOR_DEFINED &&
+                mEventSessionId == sessionId && mEventData == sessionId &&
+                mExpirationSessionId == sessionId && mExpiryTimeInMs == 100 &&
+                mKeysSessionId == sessionId && mHasNewUsableKey &&
+                std::any_of(mKeyStatusList.begin(), mKeyStatusList.end(),
+                        [&keyId](const KeyStatus& status) {
+                            return status.keyId == keyId &&
+                                    status.type == KeyStatusType::USABLE;
+                        });
+    }
+
+    bool waitForSessionLost(const std::vector<uint8_t>& sessionId) {
+        std::unique_lock<std::mutex> lock(mMutex);
+        return mCondition.wait_for(lock, std::chrono::seconds(5), [this, &sessionId] {
+            return mHasSessionLost && mLostSessionId == sessionId;
+        });
+    }
+
+private:
+    std::mutex mMutex;
+    std::condition_variable mCondition;
+    EventType mEventType = EventType::VENDOR_DEFINED;
+    std::vector<uint8_t> mEventSessionId;
+    std::vector<uint8_t> mEventData;
+    std::vector<uint8_t> mExpirationSessionId;
+    int64_t mExpiryTimeInMs = 0;
+    std::vector<uint8_t> mKeysSessionId;
+    std::vector<KeyStatus> mKeyStatusList;
+    std::vector<uint8_t> mLostSessionId;
+    bool mHasNewUsableKey = false;
+    bool mHasEvent = false;
+    bool mHasExpirationUpdate = false;
+    bool mHasKeysChange = false;
+    bool mHasSessionLost = false;
+};
+
 }  // namespace
 
-class VTS_L2_DrmClearKey : public UTCore {};
+class L2Cases : public DrmSchemeTest {
+public:
+    explicit L2Cases(const char* scheme) : DrmSchemeTest(scheme, "L2") {}
+    void fixtureValidation_pos();
+    void keyRequestAndResponse_pos();
+    void offlineKeySetCreated_pos();
+    void listenerCallbacks_pos();
+    void getKeyRequestResourceContention_neg();
+    void getKeyRequestInvalidStateAndSessionLost_neg();
+    void malformedClearKeyEmptyKeyRejected_neg();
+    void malformedClearKeyLongKeyRejected_neg();
+    void badLevelNotSupported_neg();
+    void decryptClearSegmentWithAvBuffer_pos();
+    void decryptKnownSample_pos();
+    void decryptKnownSampleWithAvBuffer_pos();
+    void decryptSubsamplesAndPattern_pos();
+    void decryptBoundsAndInvalidInputsRejected_neg();
+    void decryptWithoutKeysRejected_neg();
+    void removedKeysAndClosedSessionRejectAvBufferDecrypt_neg();
+    void removeKeysRejectsDecrypt_neg();
+    void emptyLicenseResponseRejected_neg();
+    void invalidInitDataRejected_neg();
+    void closedSessionRejectsOperations_neg();
+};
 
 /**
- * @brief Validates the configured ClearKey vector files and cryptographic field sizes.
+ * @brief Validates that the selected scheme's init-data fixture is readable and non-empty.
  *
- * This test is opt-in. It returns without running when L2 is disabled.
+ * Disabled and unsupported optional profiles are reported as skipped by SetUp.
  *
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 001@n
  * **Priority:** High@n
- * **Pre-Conditions:** Enable L2 through YAML or environment and provide the ClearKey vector inputs@n
- * **Dependencies:** Init data, ciphertext, plaintext, KID, key, and IV files/values@n
+ * **Pre-Conditions:** Enable the scheme's L2 cases and provide init data@n
+ * **Dependencies:** Scheme-specific init-data file@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
- * |01|Load the configured ClearKey fixture|YAML or DRM_L2_* overrides|All required fixture inputs are present and readable|Should Pass|
- * |02|Validate KID, key, and IV sizes|KID, key, IV|Each value is 16 bytes|AES-128 test vector|
- * |03|Validate sample lengths|Ciphertext, plaintext|Both have equal length|Should Pass|
+ * |01|Load the configured init-data fixture|YAML or scoped environment override|Fixture is readable and non-empty|Should Pass|
  */
-UT_ADD_TEST(VTS_L2_DrmClearKey, fixtureValidation_pos) {
-    if (!enabled()) {
-        return;
-    }
-    ClearKeyFixture fixture;
-    UT_ASSERT_TRUE(loadFixture(&fixture));
-    UT_ASSERT_EQUAL(fixture.kid.size(), static_cast<size_t>(16));
-    UT_ASSERT_EQUAL(fixture.key.size(), static_cast<size_t>(16));
-    UT_ASSERT_EQUAL(fixture.iv.size(), static_cast<size_t>(16));
+void L2Cases::fixtureValidation_pos() {
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
 }
 
 /**
- * @brief Exercises ClearKey request/response processing and verifies key status.
+ * @brief Exercises the selected scheme's request/response processing and key status.
  *
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 002@n
  * **Priority:** High@n
- * **Pre-Conditions:** Enable L2 through YAML or environment and provide valid ClearKey fixture inputs@n
- * **Dependencies:** ClearKey DRM factory and an accepted license response@n
+ * **Pre-Conditions:** Enable L2 and provide valid scheme-specific license inputs@n
+ * **Dependencies:** Selected DRM factory and an accepted license response@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
- * |01|Open a DRM session and request a streaming key|Init data, video/mp4, STREAMING|Request succeeds and request bytes are non-empty|Should Pass|
- * |02|Acquire and provide the license response|HTTP endpoint or local generated/file response|Response succeeds and crypto session binding succeeds|Test-only ClearKey material|
+ * |01|Open a DRM session and request a streaming key|Configured init data, MIME and security level|Request succeeds and request bytes are non-empty|Should Pass|
+ * |02|Acquire and provide the license response|HTTP adapter or local response file; optional ClearKey JSON generation|Response and crypto session binding succeed|Disposable test licenses|
  * |03|Query the session key status|Session ID|Call succeeds and returns at least one status value|Should Pass|
  */
-UT_ADD_TEST(VTS_L2_DrmClearKey, keyRequestAndResponse_pos) {
-    if (!enabled()) {
-        return;
-    }
-    ClearKeyFixture fixture;
-    UT_ASSERT_TRUE(loadFixture(&fixture));
+void L2Cases::keyRequestAndResponse_pos() {
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
     LicensedSession licensed;
-    UT_ASSERT_TRUE(licensed.open(fixture));
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
 
     std::vector<com::rdk::hal::drm::KeyValue> status;
-    UT_ASSERT_TRUE(licensed.drm->queryKeyStatus(licensed.session, &status).isOk());
+    DRM_PLUGIN_QUERY_KEY_STATUS_SUCCESS(licensed.drm, licensed.session, status);
     UT_ASSERT_FALSE(status.empty());
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Requests an offline key and checks the returned key-set identifier.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 014@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** L2 enabled with an offline-capable license fixture or HTTP adapter@n
+ * **Dependencies:** DRM plugin and scheme-specific offline license support@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Request and provide an OFFLINE license|Configured init data and offline license response|AIDL succeeds and returns a non-empty key-set ID|No playback|
+ */
+void L2Cases::offlineKeySetCreated_pos() {
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.openSession());
+
+    KeyRequest request;
+    const Status requestStatus = licensed.drm->getKeyRequest(
+            licensed.session,
+            fixture.initData,
+            vts_drm_config_value("DRM_L2_MIME_TYPE"),
+            KeyType::OFFLINE,
+            {},
+            &request);
+    if (hasServiceSpecificError(
+                requestStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
+        UT_LOG_INFO("SKIP: configured DRM scheme does not support offline key requests");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(requestStatus);
+    UT_ASSERT_TRUE_FATAL(!request.request.empty());
+
+    bool useHttp = false;
+    UT_ASSERT_TRUE_FATAL(vts_drm_license_uses_http("L2", &useHttp));
+    const char* offlineResponsePath =
+            vts_drm_config_value("DRM_L2_OFFLINE_LICENSE_RESPONSE");
+    const char* configuredKey = vts_drm_config_value("DRM_L2_KEY_HEX");
+    if (!useHttp &&
+            (offlineResponsePath == nullptr || offlineResponsePath[0] == '\0') &&
+            (vts_drm_active_profile()->scheme != "clearkey" ||
+             configuredKey == nullptr || configuredKey[0] == '\0')) {
+        UT_LOG_INFO("SKIP: no local OFFLINE license response or generated ClearKey key configured");
+        UT_IGNORE_TEST();
+    }
+
+    std::vector<uint8_t> response;
+    if (!loadOfflineLicenseResponse(request.request, &response)) {
+        UT_FAIL_FATAL("Unable to load an OFFLINE license response");
+    }
+    com::rdk::hal::drm::KeySetId keySetId;
+    const Status responseStatus = licensed.drm->provideKeyResponse(
+            licensed.session, response, &keySetId);
+    if (hasServiceSpecificError(
+                responseStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
+        UT_LOG_INFO("SKIP: configured DRM scheme does not support offline license responses");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(responseStatus);
+    UT_ASSERT_TRUE_FATAL(!keySetId.keySetId.empty());
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Verifies ClearKey event, expiration, and key-change callback payloads.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 015@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** ClearKey L2 enabled with accepted license inputs@n
+ * **Dependencies:** ClearKey DRM plugin listener@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Register listener before providing the license|Session ID|Listener registration succeeds|ClearKey-specific callback contract|
+ * |02|Wait for key response callbacks|License response|Vendor event, expiration and key-change callbacks arrive|Should Pass|
+ * |03|Validate callback session, event data, status and expiry|Configured KID|Payloads match the callback contract|Should Pass|
+ */
+void L2Cases::listenerCallbacks_pos() {
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    sp<DrmTestListener> listener = sp<DrmTestListener>::make();
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture, listener));
+    UT_ASSERT_TRUE_FATAL(listener->waitForLicenseCallbacks());
+    UT_ASSERT_TRUE(listener->licenseCallbacksMatch(licensed.session, fixture.kid));
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Checks resource-contention errors from the ClearKey test hook.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 016@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** ClearKey L2 enabled with valid init data@n
+ * **Dependencies:** RDK ClearKey VTS error-injection property@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Set one-shot resource-contention injection|rdkVtsError=resourceContention|Property is accepted|Reference ClearKey test hook|
+ * |02|Request a streaming key|Open session and configured init data|Returns ERROR_DRM_RESOURCE_CONTENTION|Documented error|
+ */
+void L2Cases::getKeyRequestResourceContention_neg() {
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.openSession());
+
+    const Status hookStatus =
+            licensed.drm->setPropertyString("rdkVtsError", "resourceContention");
+    if (hasServiceSpecificError(hookStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
+        UT_LOG_INFO("SKIP: ClearKey implementation does not expose the RDK VTS error hook");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(hookStatus);
+
+    KeyRequest request;
+    const Status status = licensed.drm->getKeyRequest(
+            licensed.session,
+            fixture.initData,
+            vts_drm_config_value("DRM_L2_MIME_TYPE"),
+            KeyType::STREAMING,
+            {},
+            &request);
+    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+            status, DrmErrors::ERROR_DRM_RESOURCE_CONTENTION));
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Checks invalid-state reporting and the matching session-lost callback.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 017@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** ClearKey L2 enabled with valid init data@n
+ * **Dependencies:** RDK ClearKey VTS error-injection property and listener@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Register listener and set invalid-state injection|rdkVtsError=invalidState|Both calls succeed|Reference ClearKey test hook|
+ * |02|Request a streaming key|Open session and configured init data|Returns ERROR_DRM_INVALID_STATE|Documented error|
+ * |03|Wait for session-lost notification|Same session ID|onSessionLostState reports that session|Should Pass|
+ */
+void L2Cases::getKeyRequestInvalidStateAndSessionLost_neg() {
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.openSession());
+    sp<DrmTestListener> listener = sp<DrmTestListener>::make();
+    DRM_PLUGIN_SET_LISTENER_SUCCESS(licensed.drm, listener);
+
+    const Status hookStatus =
+            licensed.drm->setPropertyString("rdkVtsError", "invalidState");
+    if (hasServiceSpecificError(hookStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
+        UT_LOG_INFO("SKIP: ClearKey implementation does not expose the RDK VTS error hook");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(hookStatus);
+
+    KeyRequest request;
+    const Status status = licensed.drm->getKeyRequest(
+            licensed.session,
+            fixture.initData,
+            vts_drm_config_value("DRM_L2_MIME_TYPE"),
+            KeyType::STREAMING,
+            {},
+            &request);
+    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+            status, DrmErrors::ERROR_DRM_INVALID_STATE));
+    UT_ASSERT_TRUE_FATAL(listener->waitForSessionLost(licensed.session));
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+namespace {
+
+void rejectMalformedClearKeyKey(
+        const std::vector<uint8_t>& keyBytes) {
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.openSession());
+    KeyRequest request;
+    DRM_PLUGIN_GET_KEY_REQUEST_SUCCESS(
+            licensed.drm,
+            licensed.session,
+            fixture.initData,
+            vts_drm_config_value("DRM_L2_MIME_TYPE"),
+            KeyType::STREAMING,
+            {},
+            request);
+    const std::string responseText =
+            "{\"keys\":[{\"kty\":\"oct\",\"kid\":\"" + base64Url(fixture.kid) +
+            "\",\"k\":\"" + base64Url(keyBytes) +
+            "\"}],\"type\":\"temporary\"}";
+    const std::vector<uint8_t> response(responseText.begin(), responseText.end());
+    com::rdk::hal::drm::KeySetId keySetId;
+    const Status status = licensed.drm->provideKeyResponse(
+            licensed.session, response, &keySetId);
+    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+            status, DrmErrors::ERROR_DRM_LICENSE_PARSE));
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+}  // namespace
+
+/**
+ * @brief Rejects a ClearKey response containing an empty content key.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 018@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** ClearKey L2 enabled with valid init data@n
+ * **Dependencies:** ClearKey license parser@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Provide a license with an empty JWK key|Valid 16-byte KID and empty key|Returns ERROR_DRM_LICENSE_PARSE|Rejected before decrypt|
+ */
+void L2Cases::malformedClearKeyEmptyKeyRejected_neg() {
+    rejectMalformedClearKeyKey({});
+}
+
+/**
+ * @brief Rejects a ClearKey response containing a key longer than AES-128.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 019@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** ClearKey L2 enabled with valid init data@n
+ * **Dependencies:** ClearKey license parser@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Provide a license with a 17-byte JWK key|Valid 16-byte KID and 17-byte key|Returns ERROR_DRM_LICENSE_PARSE|Rejected before decrypt|
+ */
+void L2Cases::malformedClearKeyLongKeyRejected_neg() {
+    rejectMalformedClearKeyKey(std::vector<uint8_t>(17, 0x5a));
+}
+
+/**
+ * @brief Confirms ClearKey does not advertise hardware-secure content support.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 020@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** ClearKey L2 enabled@n
+ * **Dependencies:** DRM factory capability query@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Query ClearKey support at HW_SECURE_ALL|video/mp4|Combination is not supported|ClearKey-specific|
+ */
+void L2Cases::badLevelNotSupported_neg() {
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_IGNORE_TEST();
+    }
+    bool supported = true;
+    UT_ASSERT_TRUE(vts_drm_content_supported(
+            "video/mp4", com::rdk::hal::drm::SecurityLevel::HW_SECURE_ALL, &supported));
+    UT_ASSERT_FALSE(supported);
+}
+
+/**
+ * @brief Decrypts a fully clear segment through the AIDL AVBuffer path.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 012@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L2 enabled and AVBuffer services available@n
+ * **Dependencies:** DRM and Crypto plugins@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Submit a clear-only sample using UNENCRYPTED mode|Caller-owned source/destination AVBuffers|AIDL succeeds and reports the full sample size|No license or decoder|
+ * |02|Compare destination bytes and clean up handles|Deterministic clear bytes|Output matches input; caller frees both handles|Should Pass|
+ */
+void L2Cases::decryptClearSegmentWithAvBuffer_pos() {
+    Uuid uuid;
+    UT_ASSERT_TRUE_FATAL(vts_drm_getSupportedUuid(&uuid).isOk());
+    sp<IDrmPlugin> drm;
+    sp<ICryptoPlugin> crypto;
+    UT_ASSERT_TRUE_FATAL(vts_drm_createPlugins(uuid, &drm, &crypto).isOk());
+
+    com::rdk::hal::drm::SecurityLevel level;
+    UT_ASSERT_TRUE_FATAL(vts_drm_parse_security_level(
+            vts_drm_config_value("DRM_L2_SECURITY_LEVEL"), &level));
+    std::vector<uint8_t> session;
+    DRM_PLUGIN_OPEN_SESSION_SUCCESS(drm, level, session);
+    DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_SUCCESS(crypto, session);
+
+    std::vector<uint8_t> clearData(1024);
+    for (size_t i = 0; i < clearData.size(); ++i) {
+        clearData[i] = static_cast<uint8_t>((i * 37U + 11U) & 0xffU);
+    }
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(clearData.size()));
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(clearData));
+
+    SubSample clearSegment;
+    clearSegment.numBytesOfClearData = static_cast<int32_t>(clearData.size());
+    clearSegment.numBytesOfEncryptedData = 0;
+    const std::vector<uint8_t> keyId(16, 0);
+    const std::vector<uint8_t> iv(16, 0);
+    const DecryptArgs args = buffers.decryptArgs(
+            keyId, iv, Mode::UNENCRYPTED, {clearSegment});
+    int32_t decryptedBytes = 0;
+    DRM_CRYPTO_PLUGIN_DECRYPT_SUCCESS(crypto, args, decryptedBytes);
+    UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(clearData.size()));
+
+    std::vector<uint8_t> decrypted;
+    UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, clearData.size()));
+    UT_ASSERT_TRUE_FATAL(decrypted == clearData);
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    DRM_PLUGIN_CLOSE_SESSION_SUCCESS(drm, session);
 }
 
 /**
@@ -313,19 +931,364 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, keyRequestAndResponse_pos) {
  * |02|Decrypt the sample using the legacy DRM vector API|KID, ciphertext, IV|Decrypt call succeeds|Not the ICryptoPlugin AVBuffer path|
  * |03|Compare decrypted output with the known plaintext|Decrypted bytes, plaintext file|Byte arrays match exactly|Should Pass|
  */
-UT_ADD_TEST(VTS_L2_DrmClearKey, decryptKnownSample_pos) {
-    if (!enabled()) {
-        return;
+void L2Cases::decryptKnownSample_pos() {
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_LOG_INFO("SKIP: legacy DRM vector decryption is ClearKey-specific; use L3 AVBuffer tests");
+        UT_IGNORE_TEST();
     }
-    ClearKeyFixture fixture;
-    UT_ASSERT_TRUE(loadFixture(&fixture));
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadVector(&fixture));
     LicensedSession licensed;
-    UT_ASSERT_TRUE(licensed.open(fixture));
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
 
     std::vector<uint8_t> decrypted;
-    UT_ASSERT_TRUE(licensed.drm->decrypt(
-            licensed.session, fixture.kid, fixture.ciphertext, fixture.iv, &decrypted).isOk());
+    DRM_PLUGIN_DECRYPT_SUCCESS(
+            licensed.drm, licensed.session, fixture.kid, fixture.ciphertext, fixture.iv, decrypted);
     UT_ASSERT_TRUE(decrypted == fixture.plaintext);
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Decrypts the configured known vector through the AIDL AVBuffer path.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 008@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L2 enabled with a known vector and accepted license@n
+ * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Decrypt using the configured AIDL mode and pattern|KID, IV, ciphertext, AVBuffer handles|AIDL succeeds and reports the full sample size|No decoder|
+ * |02|Compare output and retain caller ownership of buffers|Plaintext fixture and source AVBuffer|Output matches; source remains readable and caller frees handles|Should Pass|
+ */
+void L2Cases::decryptKnownSampleWithAvBuffer_pos() {
+    if (!l2VectorConfigured()) {
+        UT_LOG_INFO("SKIP: L2 AVBuffer vector fixtures are not configured");
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadVector(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
+
+    SubSample sample;
+    sample.numBytesOfClearData = 0;
+    sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
+    const DecryptArgs args = buffers.decryptArgs(
+            fixture.kid, fixture.iv, fixture.mode, {sample},
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    Status status = licensed.crypto->decrypt(args, &decryptedBytes);
+    if (hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION)) {
+        UT_LOG_INFO("SKIP: configured license requires protected output buffers");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(status);
+    UT_ASSERT_EQUAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
+
+    std::vector<uint8_t> decrypted;
+    UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+    UT_ASSERT_TRUE_FATAL(decrypted == fixture.plaintext);
+    std::vector<uint8_t> retainedSource;
+    UT_ASSERT_TRUE_FATAL(buffers.readSource(&retainedSource, fixture.ciphertext.size()));
+    UT_ASSERT_TRUE(retainedSource == fixture.ciphertext);
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Checks AIDL decrypt handling of multiple subsamples and clear ranges.
+ *
+ * Pattern values are taken from the L2 vector configuration. Mixed clear and
+ * encrypted subsamples use a CTR fixture with the default no-pattern setting.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 009@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L2 enabled with a known vector and accepted license@n
+ * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Decrypt the vector as adjacent encrypted subsamples|AES-CTR vector split into two entries|Full output matches the plaintext fixture|Should Pass|
+ * |02|Decrypt with a clear trailing subsample|Plaintext tail and encrypted prefix|Clear bytes are copied and encrypted bytes are decrypted|No decoder|
+ * |03|Apply the configured pattern when present|Patterned known vector|AIDL output matches the plaintext fixture|Pattern is fixture-specific|
+ */
+void L2Cases::decryptSubsamplesAndPattern_pos() {
+    if (!l2VectorConfigured()) {
+        UT_LOG_INFO("SKIP: L2 AVBuffer vector fixtures are not configured");
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadVector(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+
+    std::vector<uint8_t> source = fixture.ciphertext;
+    std::vector<SubSample> subSamples;
+    if (fixture.mode == Mode::AES_CTR && fixture.patternEncryptBlocks == 0 &&
+            fixture.patternSkipBlocks == 0 && source.size() > 1) {
+        const size_t split = source.size() / 2;
+        SubSample first;
+        first.numBytesOfClearData = 0;
+        first.numBytesOfEncryptedData = static_cast<int32_t>(split);
+        SubSample second;
+        second.numBytesOfClearData = 0;
+        second.numBytesOfEncryptedData = static_cast<int32_t>(source.size() - split);
+        subSamples = {first, second};
+    } else {
+        SubSample sample;
+        sample.numBytesOfClearData = 0;
+        sample.numBytesOfEncryptedData = static_cast<int32_t>(source.size());
+        subSamples = {sample};
+    }
+
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(source));
+    DecryptArgs args = buffers.decryptArgs(
+            fixture.kid, fixture.iv, fixture.mode, subSamples,
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    Status status = licensed.crypto->decrypt(args, &decryptedBytes);
+    if (hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION)) {
+        UT_LOG_INFO("SKIP: configured license requires protected output buffers");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(status);
+    UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
+    std::vector<uint8_t> decrypted;
+    UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+    UT_ASSERT_TRUE_FATAL(decrypted == fixture.plaintext);
+
+    if (fixture.mode == Mode::AES_CTR && fixture.patternEncryptBlocks == 0 &&
+            fixture.patternSkipBlocks == 0 && source.size() > 1) {
+        const size_t clearSize = std::max<size_t>(1, source.size() / 4);
+        const size_t encryptedSize = source.size() - clearSize;
+        std::copy(
+                fixture.plaintext.begin() + encryptedSize,
+                fixture.plaintext.end(),
+                source.begin() + encryptedSize);
+        SubSample encrypted;
+        encrypted.numBytesOfClearData = 0;
+        encrypted.numBytesOfEncryptedData = static_cast<int32_t>(encryptedSize);
+        SubSample clear;
+        clear.numBytesOfClearData = static_cast<int32_t>(clearSize);
+        clear.numBytesOfEncryptedData = 0;
+        UT_ASSERT_TRUE_FATAL(buffers.writeSource(source));
+        args = buffers.decryptArgs(
+                fixture.kid, fixture.iv, fixture.mode, {encrypted, clear});
+        status = licensed.crypto->decrypt(args, &decryptedBytes);
+        if (hasServiceSpecificError(
+                    status, DrmErrors::ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION)) {
+            UT_LOG_INFO("SKIP: configured license requires protected output buffers");
+            UT_IGNORE_TEST();
+        }
+        DRM_STATUS_SUCCESS(status);
+        UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
+        UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+        UT_ASSERT_TRUE(decrypted == fixture.plaintext);
+    }
+
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Checks documented AIDL errors for buffer bounds and invalid inputs.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 010@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L2 enabled with a known vector and accepted license@n
+ * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Decrypt into an undersized destination buffer|Valid sample and destination one byte too small|Returns ERROR_DRM_FRAME_TOO_LARGE|Documented error|
+ * |02|Describe more source bytes than the AVBuffer contains|Full-sample subsample and short source buffer|Returns ERROR_DRM_DECRYPT|Documented error|
+ * |03|Retry with no subsamples or an invalid handle|Empty subsample array or unallocated handle|Returns ERROR_DRM_ZERO_SUBSAMPLES or ERROR_DRM_DECRYPT|Documented errors|
+ */
+void L2Cases::decryptBoundsAndInvalidInputsRejected_neg() {
+    if (!l2VectorConfigured()) {
+        UT_LOG_INFO("SKIP: L2 AVBuffer vector fixtures are not configured");
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadVector(&fixture));
+    UT_ASSERT_TRUE_FATAL(fixture.plaintext.size() > 1);
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    SubSample sample;
+    sample.numBytesOfClearData = 0;
+    sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
+    {
+        SampleBuffers buffers;
+        UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+        UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
+        DecryptArgs args = buffers.decryptArgs(
+                fixture.kid, fixture.iv, fixture.mode, {sample},
+                fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+        int32_t decryptedBytes = 0;
+        args.subSamples.clear();
+        Status status = licensed.crypto->decrypt(args, &decryptedBytes);
+        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_ZERO_SUBSAMPLES));
+
+        args.subSamples = {sample};
+        args.sourceBufferHandle = -1;
+        status = licensed.crypto->decrypt(args, &decryptedBytes);
+        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_DECRYPT));
+
+        args.sourceBufferHandle = buffers.sourceHandle();
+        args.destinationBufferHandle = -1;
+        status = licensed.crypto->decrypt(args, &decryptedBytes);
+        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_DECRYPT));
+        UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    }
+
+    {
+        SampleBuffers smallDestination;
+        UT_ASSERT_TRUE_FATAL(smallDestination.open(
+                fixture.ciphertext.size(), fixture.plaintext.size() - 1));
+        UT_ASSERT_TRUE_FATAL(smallDestination.writeSource(fixture.ciphertext));
+        const DecryptArgs args = smallDestination.decryptArgs(
+                fixture.kid, fixture.iv, fixture.mode, {sample},
+                fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+        int32_t decryptedBytes = 0;
+        const Status status = licensed.crypto->decrypt(args, &decryptedBytes);
+        if (hasServiceSpecificError(
+                    status, DrmErrors::ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION)) {
+            UT_LOG_INFO("SKIP: configured license requires protected output buffers");
+            UT_IGNORE_TEST();
+        }
+        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_FRAME_TOO_LARGE));
+        UT_ASSERT_TRUE_FATAL(smallDestination.cleanup());
+    }
+
+    SampleBuffers shortSource;
+    UT_ASSERT_TRUE_FATAL(shortSource.open(
+            fixture.ciphertext.size() - 1, fixture.plaintext.size()));
+    UT_ASSERT_TRUE_FATAL(shortSource.writeSource(
+            std::vector<uint8_t>(fixture.ciphertext.begin(), fixture.ciphertext.end() - 1)));
+    const DecryptArgs outOfBoundsArgs = shortSource.decryptArgs(
+            fixture.kid, fixture.iv, fixture.mode, {sample},
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    const Status status = licensed.crypto->decrypt(outOfBoundsArgs, &decryptedBytes);
+    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_DECRYPT));
+    UT_ASSERT_TRUE_FATAL(shortSource.cleanup());
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Rejects encrypted AVBuffer decryption when the session has no keys.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 013@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L2 enabled with known-vector fixtures@n
+ * **Dependencies:** DRM, Crypto and AVBuffer services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Open and bind a session without requesting or providing a key|Configured encrypted sample|Session setup succeeds without a license|Should Pass|
+ * |02|Attempt AIDL decryption|KID, IV, ciphertext and AVBuffer handles|Returns ERROR_DRM_NO_LICENSE|Documented error|
+ */
+void L2Cases::decryptWithoutKeysRejected_neg() {
+    if (!l2VectorConfigured()) {
+        UT_LOG_INFO("SKIP: L2 AVBuffer vector fixtures are not configured");
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadVector(&fixture));
+
+    LicensedSession unlicensed;
+    UT_ASSERT_TRUE_FATAL(unlicensed.openSession());
+    DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_SUCCESS(unlicensed.crypto, unlicensed.session);
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
+
+    SubSample sample;
+    sample.numBytesOfClearData = 0;
+    sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
+    const DecryptArgs args = buffers.decryptArgs(
+            fixture.kid, fixture.iv, fixture.mode, {sample},
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    const Status status = unlicensed.crypto->decrypt(args, &decryptedBytes);
+    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+            status, DrmErrors::ERROR_DRM_NO_LICENSE));
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    UT_ASSERT_TRUE(unlicensed.close());
+}
+
+/**
+ * @brief Asserts documented AIDL errors after key removal and session closure.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 011@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L2 enabled with a known vector and accepted license@n
+ * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Remove keys and attempt AIDL decryption|Active DRM session and valid sample|Returns ERROR_DRM_NO_LICENSE|Documented error|
+ * |02|Close the DRM session and retry decryption|Closed session ID and same handles|Returns ERROR_DRM_SESSION_NOT_OPENED|Documented error|
+ */
+void L2Cases::removedKeysAndClosedSessionRejectAvBufferDecrypt_neg() {
+    if (!l2VectorConfigured()) {
+        UT_LOG_INFO("SKIP: L2 AVBuffer vector fixtures are not configured");
+        UT_IGNORE_TEST();
+    }
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadVector(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
+
+    SubSample sample;
+    sample.numBytesOfClearData = 0;
+    sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
+    const DecryptArgs args = buffers.decryptArgs(
+            fixture.kid, fixture.iv, fixture.mode, {sample},
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    Status status = licensed.crypto->decrypt(args, &decryptedBytes);
+    if (hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION)) {
+        UT_LOG_INFO("SKIP: configured license requires protected output buffers");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(status);
+    UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
+    DRM_PLUGIN_REMOVE_KEYS_SUCCESS(licensed.drm, licensed.session);
+    status = licensed.crypto->decrypt(args, &decryptedBytes);
+    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_NO_LICENSE));
+
+    UT_ASSERT_TRUE_FATAL(licensed.close());
+    status = licensed.crypto->decrypt(args, &decryptedBytes);
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            status, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
 }
 
 /**
@@ -342,58 +1305,86 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, decryptKnownSample_pos) {
  * |----------------|-----------|---------|---------------|-----|
  * |01|Acquire a key for the encrypted sample|Init data and ClearKey response|Session setup succeeds|Should Pass|
  * |02|Remove keys from the active session|Session ID|removeKeys succeeds|Should Pass|
- * |03|Retry sample decryption|KID, ciphertext, IV|Decrypt call fails after key removal|Negative case|
+ * |03|Retry sample decryption|KID, ciphertext, IV|Returns ERROR_DRM_NO_LICENSE|Documented negative result|
  */
-UT_ADD_TEST(VTS_L2_DrmClearKey, removeKeysRejectsDecrypt_neg) {
-    if (!enabled()) {
-        return;
+void L2Cases::removeKeysRejectsDecrypt_neg() {
+    if (vts_drm_active_profile()->scheme != "clearkey") {
+        UT_LOG_INFO("SKIP: legacy DRM vector decryption is ClearKey-specific; use L3 AVBuffer tests");
+        UT_IGNORE_TEST();
     }
-    ClearKeyFixture fixture;
-    UT_ASSERT_TRUE(loadFixture(&fixture));
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadVector(&fixture));
     LicensedSession licensed;
-    UT_ASSERT_TRUE(licensed.open(fixture));
-    UT_ASSERT_TRUE(licensed.drm->removeKeys(licensed.session).isOk());
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    std::vector<uint8_t> baseline;
+    DRM_PLUGIN_DECRYPT_SUCCESS(
+            licensed.drm, licensed.session, fixture.kid, fixture.ciphertext, fixture.iv, baseline);
+    UT_ASSERT_TRUE_FATAL(baseline == fixture.plaintext);
+    DRM_PLUGIN_REMOVE_KEYS_SUCCESS(licensed.drm, licensed.session);
 
     std::vector<uint8_t> decrypted;
-    UT_ASSERT_FALSE(licensed.drm->decrypt(
-            licensed.session, fixture.kid, fixture.ciphertext, fixture.iv, &decrypted).isOk());
+    const Status status = licensed.drm->decrypt(
+            licensed.session, fixture.kid, fixture.ciphertext, fixture.iv, &decrypted);
+    UT_ASSERT_TRUE(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_NO_LICENSE));
+    UT_ASSERT_TRUE(licensed.close());
 }
 
 /**
- * @brief Confirms an empty init-data blob is rejected for a streaming key request.
+ * @brief Confirms an empty license response is rejected for an open session.
  *
  * **Test Group ID:** L2: 02@n
  * **Test Case ID:** 005@n
  * **Priority:** Medium@n
- * **Pre-Conditions:** Enable L2 through YAML or environment and provide the configured fixture inputs@n
- * **Dependencies:** ClearKey DRM factory and openable session@n
+ * **Pre-Conditions:** Enable the scheme's L2 cases and provide valid init data@n
+ * **Dependencies:** Selected DRM factory and openable session@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
- * |01|Open a DRM session|Default security level|Call succeeds|Should Pass|
- * |02|Request a streaming key with empty init data|Empty init data, video/mp4|Call fails|Invalid input case|
+ * |01|Open a DRM session|Configured security level|Call succeeds|Should Pass|
+ * |02|Request a streaming license, then provide an empty response|Valid init data, empty response|Request succeeds; response returns BAD_VALUE|Documented invalid-parameter error|
  * |03|Close the session|Session ID|Call succeeds|Should Pass|
  */
-UT_ADD_TEST(VTS_L2_DrmClearKey, invalidInitDataRejected_neg) {
-    if (!enabled()) {
-        return;
-    }
-    ClearKeyFixture fixture;
-    UT_ASSERT_TRUE(loadFixture(&fixture));
-    Uuid uuid;
-    UT_ASSERT_TRUE(vts_drm_getSupportedUuid(&uuid).isOk());
-    sp<IDrmPlugin> drm;
-    UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, "com.rdk.vts.drm", &drm).isOk());
-    std::vector<uint8_t> session;
-    UT_ASSERT_TRUE(drm->openSession(
-            com::rdk::hal::drm::SecurityLevel::DEFAULT, &session).isOk());
-
+void L2Cases::emptyLicenseResponseRejected_neg() {
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.openSession());
     KeyRequest request;
-    UT_ASSERT_FALSE(drm->getKeyRequest(
-            session, {}, "video/mp4", KeyType::STREAMING, {}, &request).isOk());
-    UT_ASSERT_TRUE(drm->closeSession(session).isOk());
+    DRM_PLUGIN_GET_KEY_REQUEST_SUCCESS(licensed.drm,
+            licensed.session, fixture.initData, vts_drm_config_value("DRM_L2_MIME_TYPE"),
+            KeyType::STREAMING, {}, request);
+    UT_ASSERT_FALSE_FATAL(request.request.empty());
+    com::rdk::hal::drm::KeySetId keySetId;
+    const Status status = licensed.drm->provideKeyResponse(
+            licensed.session, {}, &keySetId);
+    UT_ASSERT_TRUE(hasServiceSpecificErrorCode(status, android::BAD_VALUE));
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Rejects a ClearKey streaming request with empty init data.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 007@n
+ * **Priority:** Medium@n
+ * **Pre-Conditions:** ClearKey L2 enabled@n
+ * **Dependencies:** ClearKey DRM plugin and openable session@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Request a streaming key with empty init data|Open session, empty init data, configured MIME|Returns BAD_VALUE|Documented invalid-parameter error|
+ */
+void L2Cases::invalidInitDataRejected_neg() {
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.openSession());
+    KeyRequest request;
+    const Status status = licensed.drm->getKeyRequest(
+            licensed.session, {}, vts_drm_config_value("DRM_L2_MIME_TYPE"),
+            KeyType::STREAMING, {}, &request);
+    UT_ASSERT_TRUE(hasServiceSpecificErrorCode(status, android::BAD_VALUE));
+    UT_ASSERT_TRUE(licensed.close());
 }
 
 /**
@@ -403,33 +1394,87 @@ UT_ADD_TEST(VTS_L2_DrmClearKey, invalidInitDataRejected_neg) {
  * **Test Case ID:** 006@n
  * **Priority:** Medium@n
  * **Pre-Conditions:** Enable L2 through YAML or environment and provide the configured fixture inputs@n
- * **Dependencies:** ClearKey DRM factory and openable session@n
+ * **Dependencies:** Selected DRM factory and openable session@n
  * **User Interaction:** None@n
  * **Test Procedure:**@n
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
- * |01|Open and close a DRM session|Default security level|Both calls succeed|Should Pass|
- * |02|Request a streaming key using the closed session ID|Session ID, valid init data, video/mp4|Call fails|Closed-session negative case|
+ * |01|Open and close a DRM session|Configured security level|Both calls succeed|Should Pass|
+ * |02|Request a streaming key using the closed session ID|Session ID, configured init data and MIME|Returns ERROR_DRM_SESSION_NOT_OPENED|Documented negative result|
  */
-UT_ADD_TEST(VTS_L2_DrmClearKey, closedSessionRejectsOperations_neg) {
-    if (!enabled()) {
-        return;
-    }
-    ClearKeyFixture fixture;
-    UT_ASSERT_TRUE(loadFixture(&fixture));
-    Uuid uuid;
-    UT_ASSERT_TRUE(vts_drm_getSupportedUuid(&uuid).isOk());
-    sp<IDrmPlugin> drm;
-    UT_ASSERT_TRUE(gDrmFactory->createDrmPlugin(
-            uuid, "com.rdk.vts.drm", &drm).isOk());
-    std::vector<uint8_t> session;
-    UT_ASSERT_TRUE(drm->openSession(
-            com::rdk::hal::drm::SecurityLevel::DEFAULT, &session).isOk());
-    UT_ASSERT_TRUE(drm->closeSession(session).isOk());
+void L2Cases::closedSessionRejectsOperations_neg() {
+    DrmFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.openSession());
+    const std::vector<uint8_t> session = licensed.session;
+    UT_ASSERT_TRUE_FATAL(licensed.close());
 
     KeyRequest request;
-    UT_ASSERT_FALSE(drm->getKeyRequest(
-            session, fixture.initData, "video/mp4", KeyType::STREAMING, {}, &request).isOk());
+    const Status status = licensed.drm->getKeyRequest(
+            session, fixture.initData, vts_drm_config_value("DRM_L2_MIME_TYPE"),
+            KeyType::STREAMING, {}, &request);
+    UT_ASSERT_TRUE(hasServiceSpecificError(
+            status, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
+}
+
+#define DRM_L2_SCHEME(Suite, Scheme) \
+    class Suite : public L2Cases { \
+    public: Suite() : L2Cases(Scheme) {} \
+    }; \
+    UT_ADD_TEST_TO_GROUP(Suite, UT_TESTS_L2) \
+    UT_ADD_TEST(Suite, fixtureValidation_pos) { L2Cases::fixtureValidation_pos(); } \
+    UT_ADD_TEST(Suite, keyRequestAndResponse_pos) { L2Cases::keyRequestAndResponse_pos(); } \
+    UT_ADD_TEST(Suite, offlineKeySetCreated_pos) { L2Cases::offlineKeySetCreated_pos(); } \
+    UT_ADD_TEST(Suite, decryptClearSegmentWithAvBuffer_pos) { \
+        L2Cases::decryptClearSegmentWithAvBuffer_pos(); \
+    } \
+    UT_ADD_TEST(Suite, decryptKnownSample_pos) { L2Cases::decryptKnownSample_pos(); } \
+    UT_ADD_TEST(Suite, decryptKnownSampleWithAvBuffer_pos) { \
+        L2Cases::decryptKnownSampleWithAvBuffer_pos(); \
+    } \
+    UT_ADD_TEST(Suite, decryptSubsamplesAndPattern_pos) { \
+        L2Cases::decryptSubsamplesAndPattern_pos(); \
+    } \
+    UT_ADD_TEST(Suite, decryptBoundsAndInvalidInputsRejected_neg) { \
+        L2Cases::decryptBoundsAndInvalidInputsRejected_neg(); \
+    } \
+    UT_ADD_TEST(Suite, decryptWithoutKeysRejected_neg) { \
+        L2Cases::decryptWithoutKeysRejected_neg(); \
+    } \
+    UT_ADD_TEST(Suite, removedKeysAndClosedSessionRejectAvBufferDecrypt_neg) { \
+        L2Cases::removedKeysAndClosedSessionRejectAvBufferDecrypt_neg(); \
+    } \
+    UT_ADD_TEST(Suite, removeKeysRejectsDecrypt_neg) { L2Cases::removeKeysRejectsDecrypt_neg(); } \
+    UT_ADD_TEST(Suite, emptyLicenseResponseRejected_neg) { L2Cases::emptyLicenseResponseRejected_neg(); } \
+    UT_ADD_TEST(Suite, closedSessionRejectsOperations_neg) { L2Cases::closedSessionRejectsOperations_neg(); }
+
+DRM_L2_SCHEME(VTS_L2_DrmClearKey, "clearkey")
+DRM_L2_SCHEME(VTS_L2_DrmWidevine, "widevine")
+DRM_L2_SCHEME(VTS_L2_DrmPlayReady, "playready")
+#undef DRM_L2_SCHEME
+
+// Empty init data can be valid for renewal in other schemes.
+UT_ADD_TEST(VTS_L2_DrmClearKey, invalidInitDataRejected_neg) {
+    L2Cases::invalidInitDataRejected_neg();
+}
+UT_ADD_TEST(VTS_L2_DrmClearKey, listenerCallbacks_pos) {
+    L2Cases::listenerCallbacks_pos();
+}
+UT_ADD_TEST(VTS_L2_DrmClearKey, getKeyRequestResourceContention_neg) {
+    L2Cases::getKeyRequestResourceContention_neg();
+}
+UT_ADD_TEST(VTS_L2_DrmClearKey, getKeyRequestInvalidStateAndSessionLost_neg) {
+    L2Cases::getKeyRequestInvalidStateAndSessionLost_neg();
+}
+UT_ADD_TEST(VTS_L2_DrmClearKey, malformedClearKeyEmptyKeyRejected_neg) {
+    L2Cases::malformedClearKeyEmptyKeyRejected_neg();
+}
+UT_ADD_TEST(VTS_L2_DrmClearKey, malformedClearKeyLongKeyRejected_neg) {
+    L2Cases::malformedClearKeyLongKeyRejected_neg();
+}
+UT_ADD_TEST(VTS_L2_DrmClearKey, badLevelNotSupported_neg) {
+    L2Cases::badLevelNotSupported_neg();
 }
 
 /** @} */ // End of DRM_HALTEST_L2_CLEARKEY

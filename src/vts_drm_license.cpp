@@ -43,6 +43,73 @@ size_t receiveResponse(char* data, size_t size, size_t count, void* context) {
     return bytes;
 }
 
+bool postRequest(
+        const std::string& url,
+        const std::string& contentType,
+        long timeout,
+        const std::vector<uint8_t>& request,
+        std::vector<uint8_t>* response) {
+    response->clear();
+    if (contentType.empty() || contentType.find_first_of("\r\n") != std::string::npos ||
+            (url.compare(0, 7, "http://") != 0 && url.compare(0, 8, "https://") != 0) ||
+            timeout <= 0 || request.empty() ||
+            request.size() > static_cast<size_t>(std::numeric_limits<curl_off_t>::max())) {
+        UT_LOG_ERROR("HTTP POST requires an HTTP(S) URL, valid content type, timeout, and request");
+        return false;
+    }
+
+    static CurlRuntime runtime;
+    if (runtime.status != CURLE_OK) {
+        UT_LOG_ERROR("Unable to initialize HTTP transport: %s",
+                curl_easy_strerror(runtime.status));
+        return false;
+    }
+    std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), curl_easy_cleanup);
+    std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> headers(
+            curl_slist_append(nullptr, ("Content-Type: " + contentType).c_str()), curl_slist_free_all);
+    if (!curl || !headers) {
+        UT_LOG_ERROR("Unable to allocate HTTP transport");
+        return false;
+    }
+    std::vector<uint8_t> received;
+    const auto setOption = [&curl](CURLoption option, auto value) {
+        const CURLcode status = curl_easy_setopt(curl.get(), option, value);
+        if (status != CURLE_OK) {
+            UT_LOG_ERROR("Unable to configure HTTP transport: %s",
+                    curl_easy_strerror(status));
+        }
+        return status == CURLE_OK;
+    };
+    if (!setOption(CURLOPT_URL, url.c_str()) ||
+            !setOption(CURLOPT_POST, 1L) ||
+            !setOption(CURLOPT_HTTPHEADER, headers.get()) ||
+            !setOption(CURLOPT_POSTFIELDS, reinterpret_cast<const char*>(request.data())) ||
+            !setOption(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(request.size())) ||
+            !setOption(CURLOPT_TIMEOUT, timeout) ||
+            !setOption(CURLOPT_CONNECTTIMEOUT, timeout) ||
+            !setOption(CURLOPT_NOSIGNAL, 1L) ||
+            !setOption(CURLOPT_FOLLOWLOCATION, 0L) ||
+            !setOption(CURLOPT_PROXY, "") ||
+            !setOption(CURLOPT_WRITEFUNCTION, receiveResponse) ||
+            !setOption(CURLOPT_WRITEDATA, &received)) {
+        return false;
+    }
+    const CURLcode status = curl_easy_perform(curl.get());
+    if (status != CURLE_OK) {
+        UT_LOG_ERROR("HTTP exchange failed: %s", curl_easy_strerror(status));
+        return false;
+    }
+    long httpStatus = 0;
+    if (curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &httpStatus) != CURLE_OK ||
+            httpStatus < 200 || httpStatus >= 300 || received.empty()) {
+        UT_LOG_ERROR("HTTP exchange rejected: status=%ld, response bytes=%zu",
+                httpStatus, received.size());
+        return false;
+    }
+    response->swap(received);
+    return true;
+}
+
 }  // namespace
 
 bool vts_drm_license_uses_http(const char* level, bool* useHttp) {
@@ -71,6 +138,8 @@ bool vts_drm_request_http_license(
             vts_drm_config_value((prefix + "REQUEST_TIMEOUT_SECONDS").c_str());
     const std::string url = configuredUrl == nullptr ? "" : configuredUrl;
     const std::string timeoutText = configuredTimeout == nullptr ? "10" : configuredTimeout;
+    const char* configuredType = vts_drm_config_value((prefix + "CONTENT_TYPE").c_str());
+    const std::string contentType = configuredType == nullptr ? "application/json" : configuredType;
     long timeout = 0;
     const auto parsed = std::from_chars(
             timeoutText.data(), timeoutText.data() + timeoutText.size(), timeout);
@@ -79,61 +148,14 @@ bool vts_drm_request_http_license(
         UT_LOG_ERROR("%sREQUEST_TIMEOUT_SECONDS must be a positive integer", prefix.c_str());
         return false;
     }
-    if ((url.compare(0, 7, "http://") != 0 && url.compare(0, 8, "https://") != 0) ||
-            request.empty() ||
-            request.size() > static_cast<size_t>(std::numeric_limits<curl_off_t>::max())) {
-        UT_LOG_ERROR("HTTP license exchange requires an HTTP(S) URL and a non-empty key request");
-        return false;
-    }
+    return postRequest(url, contentType, timeout, request, response);
+}
 
-    static CurlRuntime runtime;
-    if (runtime.status != CURLE_OK) {
-        UT_LOG_ERROR("Unable to initialize HTTP license transport: %s",
-                curl_easy_strerror(runtime.status));
-        return false;
-    }
-    std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(), curl_easy_cleanup);
-    std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> headers(
-            curl_slist_append(nullptr, "Content-Type: application/json"), curl_slist_free_all);
-    if (!curl || !headers) {
-        UT_LOG_ERROR("Unable to allocate HTTP license transport");
-        return false;
-    }
-    std::vector<uint8_t> received;
-    const auto setOption = [&curl](CURLoption option, auto value) {
-        const CURLcode status = curl_easy_setopt(curl.get(), option, value);
-        if (status != CURLE_OK) {
-            UT_LOG_ERROR("Unable to configure HTTP license transport: %s",
-                    curl_easy_strerror(status));
-        }
-        return status == CURLE_OK;
-    };
-    if (!setOption(CURLOPT_URL, url.c_str()) ||
-            !setOption(CURLOPT_POST, 1L) ||
-            !setOption(CURLOPT_HTTPHEADER, headers.get()) ||
-            !setOption(CURLOPT_POSTFIELDS, reinterpret_cast<const char*>(request.data())) ||
-            !setOption(CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(request.size())) ||
-            !setOption(CURLOPT_TIMEOUT, timeout) ||
-            !setOption(CURLOPT_CONNECTTIMEOUT, timeout) ||
-            !setOption(CURLOPT_NOSIGNAL, 1L) ||
-            !setOption(CURLOPT_FOLLOWLOCATION, 0L) ||
-            !setOption(CURLOPT_PROXY, "") ||
-            !setOption(CURLOPT_WRITEFUNCTION, receiveResponse) ||
-            !setOption(CURLOPT_WRITEDATA, &received)) {
-        return false;
-    }
-    const CURLcode status = curl_easy_perform(curl.get());
-    if (status != CURLE_OK) {
-        UT_LOG_ERROR("HTTP license exchange failed: %s", curl_easy_strerror(status));
-        return false;
-    }
-    long httpStatus = 0;
-    if (curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &httpStatus) != CURLE_OK ||
-            httpStatus < 200 || httpStatus >= 300 || received.empty()) {
-        UT_LOG_ERROR("HTTP license exchange rejected: status=%ld, response bytes=%zu",
-                httpStatus, received.size());
-        return false;
-    }
-    response->swap(received);
-    return true;
+bool vts_drm_request_http_post(
+        const std::string& url,
+        const std::string& contentType,
+        long timeoutSeconds,
+        const std::vector<uint8_t>& request,
+        std::vector<uint8_t>* response) {
+    return postRequest(url, contentType, timeoutSeconds, request, response);
 }

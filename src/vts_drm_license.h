@@ -3,11 +3,18 @@
 #define VTS_DRM_LICENSE_H
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 bool vts_drm_license_uses_http(const char* level, bool* useHttp);
 bool vts_drm_request_http_license(
         const char* level,
+        const std::vector<uint8_t>& request,
+        std::vector<uint8_t>* response);
+bool vts_drm_request_http_post(
+        const std::string& url,
+        const std::string& contentType,
+        long timeoutSeconds,
         const std::vector<uint8_t>& request,
         std::vector<uint8_t>* response);
 

@@ -57,20 +57,13 @@
 
 #include "vts_drm.h"
 #include "vts_drm_license.h"
-#include "vts_avbuffer.h"
-#include <avbufferhelper.h>
+#include "vts_drm_avbuffer.h"
 
-#include <binder/ProcessState.h>
-#include <com/rdk/hal/audiodecoder/IAudioDecoder.h>
-#include <com/rdk/hal/avbuffer/BnAVBufferSpaceListener.h>
-#include <com/rdk/hal/avbuffer/IAVBuffer.h>
-#include <com/rdk/hal/avbuffer/Pool.h>
 #include <com/rdk/hal/drm/DecryptArgs.h>
 #include <com/rdk/hal/drm/DrmErrors.h>
 #include <com/rdk/hal/drm/KeyRequest.h>
 #include <com/rdk/hal/drm/KeyType.h>
 #include <com/rdk/hal/drm/Mode.h>
-#include <com/rdk/hal/drm/Pattern.h>
 #include <com/rdk/hal/drm/SecurityLevel.h>
 #include <com/rdk/hal/drm/SubSample.h>
 
@@ -84,34 +77,18 @@
 #include <string>
 #include <vector>
 
-using android::defaultServiceManager;
-using android::interface_cast;
 using android::sp;
-using android::String16;
 using android::binder::Status;
-using com::rdk::hal::audiodecoder::IAudioDecoder;
-using com::rdk::hal::avbuffer::BnAVBufferSpaceListener;
-using com::rdk::hal::avbuffer::IAVBuffer;
-using com::rdk::hal::avbuffer::IAVBufferSpaceListener;
-using com::rdk::hal::avbuffer::Pool;
 using com::rdk::hal::drm::DecryptArgs;
 using com::rdk::hal::drm::DrmErrors;
 using com::rdk::hal::drm::KeyRequest;
 using com::rdk::hal::drm::KeyType;
 using com::rdk::hal::drm::Mode;
-using com::rdk::hal::drm::Pattern;
 using com::rdk::hal::drm::SecurityLevel;
 using com::rdk::hal::drm::SubSample;
-
-UT_ADD_TEST_TO_GROUP(VTS_L3_Drm, UT_TESTS_L3)
+using vts_drm::SampleBuffers;
 
 namespace {
-
-static sp<IAVBuffer> vts_avbuffer_getService() {
-    return interface_cast<IAVBuffer>(
-            defaultServiceManager()->getService(
-                    String16(IAVBuffer::serviceName().c_str())));
-}
 
 struct SampleFixture {
     std::vector<uint8_t> initData;
@@ -124,12 +101,12 @@ struct SampleFixture {
     Mode mode = Mode::AES_CTR;
 };
 
-class BufferSpaceListener final : public BnAVBufferSpaceListener {
-public:
-    Status onSpaceAvailable() override {
-        return Status::ok();
-    }
-};
+DecryptArgs sampleDecryptArgs(const SampleFixture& fixture, const SampleBuffers& buffers) {
+    SubSample sample;
+    sample.numBytesOfClearData = 0;
+    sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
+    return buffers.decryptArgs(fixture.keyId, fixture.iv, fixture.mode, {sample});
+}
 
 bool hasServiceSpecificError(const Status& status, DrmErrors error) {
     return !status.isOk() &&
@@ -272,7 +249,12 @@ public:
             return false;
         }
 
-        Status status = drm->openSession(SecurityLevel::DEFAULT, &session);
+        SecurityLevel level;
+        if (!vts_drm_parse_security_level(
+                    vts_drm_config_value("DRM_L3_SECURITY_LEVEL"), &level)) {
+            return false;
+        }
+        Status status = drm->openSession(level, &session);
         if (!status.isOk() || session.empty()) {
             UT_LOG_ERROR("Unable to open DRM session");
             return false;
@@ -338,167 +320,6 @@ public:
 };
 
 
-class SampleBuffers {
-public:
-    bool open(size_t size) {
-        mManager = vts_avbuffer_getService();
-        if (mManager == nullptr) {
-            UT_LOG_ERROR("AVBuffer Service not available");
-            return false;
-        }
-
-        mHelper = getAVBufferHelperInstance();
-        if (mHelper == nullptr) {
-            UT_LOG_ERROR("AVBuffer helper is unavailable");
-            return false;
-        }
-
-        android::ProcessState::self()->startThreadPool();
-        mListener = new BufferSpaceListener();
-        IAudioDecoder::Id decoderId;
-        decoderId.value = IAudioDecoder::Id::UNDEFINED;
-        Status status = mManager->createAudioPool(false, decoderId, mListener, &mPool);
-        if (!status.isOk()) {
-            UT_LOG_ERROR("Unable to create a non-secure audio AVBuffer pool");
-            return false;
-        }
-        mPoolCreated = true;
-
-        status = mManager->alloc(mPool, static_cast<int32_t>(size), &mSourceHandle);
-        if (!status.isOk()) {
-            UT_LOG_ERROR("Unable to allocate the encrypted AVBuffer");
-            return false;
-        }
-        mSourceAllocated = true;
-        status = mManager->alloc(mPool, static_cast<int32_t>(size), &mDestinationHandle);
-        if (!status.isOk()) {
-            UT_LOG_ERROR("Unable to allocate the decrypted AVBuffer");
-            return false;
-        }
-        mDestinationAllocated = true;
-        return true;
-    }
-
-    bool writeSource(const std::vector<uint8_t>& data) {
-        uint32_t mappedSize = 0;
-        void* mapped = mHelper->mapHandle(
-                static_cast<uint64_t>(mSourceHandle), &mappedSize);
-        if (mapped == nullptr) {
-            UT_LOG_ERROR("Unable to map the encrypted AVBuffer");
-            return false;
-        }
-        if (mappedSize < data.size()) {
-            const bool unmapped =
-                    mHelper->unmapHandle(static_cast<uint64_t>(mSourceHandle));
-            UT_LOG_ERROR("Encrypted AVBuffer mapping is too small");
-            if (!unmapped) {
-                UT_LOG_ERROR("Unable to unmap the encrypted AVBuffer");
-            }
-            return false;
-        }
-        std::memcpy(mapped, data.data(), data.size());
-        if (!mHelper->unmapHandle(static_cast<uint64_t>(mSourceHandle))) {
-            UT_LOG_ERROR("Unable to unmap the encrypted AVBuffer");
-            return false;
-        }
-        return true;
-    }
-
-    bool readDestination(std::vector<uint8_t>* data, size_t size) {
-        uint32_t mappedSize = 0;
-        void* mapped = mHelper->mapHandle(
-                static_cast<uint64_t>(mDestinationHandle), &mappedSize);
-        if (mapped == nullptr) {
-            UT_LOG_ERROR("Unable to map the decrypted AVBuffer");
-            return false;
-        }
-        if (mappedSize < size) {
-            const bool unmapped =
-                    mHelper->unmapHandle(static_cast<uint64_t>(mDestinationHandle));
-            UT_LOG_ERROR("Decrypted AVBuffer mapping is too small");
-            if (!unmapped) {
-                UT_LOG_ERROR("Unable to unmap the decrypted AVBuffer");
-            }
-            return false;
-        }
-        data->assign(static_cast<uint8_t*>(mapped), static_cast<uint8_t*>(mapped) + size);
-        if (!mHelper->unmapHandle(static_cast<uint64_t>(mDestinationHandle))) {
-            UT_LOG_ERROR("Unable to unmap the decrypted AVBuffer");
-            return false;
-        }
-        return true;
-    }
-
-    DecryptArgs decryptArgs(const SampleFixture& fixture) const {
-        DecryptArgs args;
-        args.secure = false;
-        args.keyId = fixture.keyId;
-        args.iv = fixture.iv;
-        args.mode = fixture.mode;
-        args.pattern.encryptBlocks = 0;
-        args.pattern.skipBlocks = 0;
-        SubSample sample;
-        sample.numBytesOfClearData = 0;
-        sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
-        args.subSamples = {sample};
-        args.sourceBufferHandle = mSourceHandle;
-        args.destinationBufferHandle = mDestinationHandle;
-        return args;
-    }
-
-    bool cleanup() {
-        bool success = true;
-        if (mSourceAllocated) {
-            bool freed = false;
-            const Status status = mManager->free(mSourceHandle, &freed);
-            if (!status.isOk() || !freed) {
-                UT_LOG_ERROR("Unable to free the encrypted AVBuffer");
-                success = false;
-            } else {
-                mSourceAllocated = false;
-            }
-        }
-        if (mDestinationAllocated) {
-            bool freed = false;
-            const Status status = mManager->free(mDestinationHandle, &freed);
-            if (!status.isOk() || !freed) {
-                UT_LOG_ERROR("Unable to free the decrypted AVBuffer");
-                success = false;
-            } else {
-                mDestinationAllocated = false;
-            }
-        }
-        if (mPoolCreated && !mSourceAllocated && !mDestinationAllocated) {
-            bool destroyed = false;
-            const Status status = mManager->destroyPool(mPool, &destroyed);
-            if (!status.isOk() || !destroyed) {
-                UT_LOG_ERROR("Unable to destroy the AVBuffer pool");
-                success = false;
-            } else {
-                mPoolCreated = false;
-            }
-        }
-        return success;
-    }
-
-    ~SampleBuffers() {
-        if (!cleanup()) {
-            UT_LOG_ERROR("AVBuffer cleanup failed");
-        }
-    }
-
-private:
-    sp<IAVBuffer> mManager;
-    sp<IAVBufferSpaceListener> mListener;
-    IAVBufferHelper* mHelper = nullptr;
-    Pool mPool;
-    int64_t mSourceHandle = -1;
-    int64_t mDestinationHandle = -1;
-    bool mPoolCreated = false;
-    bool mSourceAllocated = false;
-    bool mDestinationAllocated = false;
-};
-
 class OpenDrmSession {
 public:
     bool open(const sp<IDrmPlugin>& plugin, SecurityLevel level) {
@@ -539,41 +360,68 @@ private:
     std::vector<uint8_t> mSession;
 };
 
-bool parseSecurityLevel(const char* value, SecurityLevel* level) {
-    if (value == nullptr || value[0] == '\0') {
-        UT_LOG_ERROR("DRM_L3_REQUIRED_SECURITY_LEVEL is not set");
+const char* codecMimeType() {
+    const char* codec = vts_drm_config_value("DRM_L3_CODEC_MIME_TYPE");
+    if (codec != nullptr && codec[0] != '\0') {
+        return codec;
+    }
+    if (vts_drm_active_profile()->scheme == "clearkey") {
+        return vts_drm_config_value("DRM_L3_MIME_TYPE");
+    }
+    UT_LOG_ERROR("Vendor L3 tests require sample.codec_mime_type (for example video/avc), not a container MIME");
+    return nullptr;
+}
+
+bool requiresProtectedOutput(const LicensedSession& licensed, bool* required) {
+    const char* mime = codecMimeType();
+    if (mime == nullptr) {
         return false;
     }
-    const std::string name(value);
-    if (name == "SW_SECURE_CRYPTO") {
-        *level = SecurityLevel::SW_SECURE_CRYPTO;
-    } else if (name == "SW_SECURE_DECODE") {
-        *level = SecurityLevel::SW_SECURE_DECODE;
-    } else if (name == "HW_SECURE_CRYPTO") {
-        *level = SecurityLevel::HW_SECURE_CRYPTO;
-    } else if (name == "HW_SECURE_DECODE") {
-        *level = SecurityLevel::HW_SECURE_DECODE;
-    } else if (name == "HW_SECURE_ALL") {
-        *level = SecurityLevel::HW_SECURE_ALL;
-    } else {
-        UT_LOG_ERROR("DRM_L3_REQUIRED_SECURITY_LEVEL is not a supported security level");
+    SecurityLevel level = SecurityLevel::UNKNOWN;
+    if (!licensed.drm->getSecurityLevel(licensed.session, &level).isOk() ||
+            level < SecurityLevel::SW_SECURE_CRYPTO || level > SecurityLevel::HW_SECURE_ALL ||
+            !licensed.drm->requiresSecureDecoder(mime, level, required).isOk()) {
+        UT_LOG_ERROR("Unable to query session secure-decoder requirement");
         return false;
     }
+    bool cryptoRequired = false;
+    if (!licensed.crypto->requiresSecureDecoderComponent(mime, &cryptoRequired).isOk()) {
+        UT_LOG_ERROR("Unable to query Crypto secure-decoder requirement");
+        return false;
+    }
+    *required = *required || cryptoRequired;
     return true;
+}
+
+bool probeProtectedOutput(bool* required) {
+    Uuid uuid;
+    LicensedSession probe;
+    SecurityLevel level;
+    if (!vts_drm_getSupportedUuid(&uuid).isOk() ||
+            !vts_drm_createPlugins(uuid, &probe.drm, &probe.crypto).isOk() ||
+            !vts_drm_parse_security_level(
+                    vts_drm_config_value("DRM_L3_SECURITY_LEVEL"), &level)) {
+        UT_LOG_ERROR("Unable to prepare DRM output-capability probe");
+        return false;
+    }
+    if (!probe.drm->openSession(level, &probe.session).isOk() || probe.session.empty() ||
+            !probe.crypto->setMediaDrmSession(probe.session).isOk()) {
+        UT_LOG_ERROR("Unable to open/bind DRM output-capability probe session");
+        return false;
+    }
+    const bool success = requiresProtectedOutput(probe, required);
+    const bool closed = probe.close();
+    return success && closed;
 }
 
 }  // namespace
 
-class VTS_L3_Drm : public UTCore {
+class L3Cases : public DrmSchemeTest {
 public:
-    void SetUp() override {
-        if (!enabled()) {
-            return;
-        }
-        if (gDrmFactory == nullptr) {
-            UT_FAIL_FATAL("DRM factory service not available");
-        }
-    }
+    explicit L3Cases(const char* scheme) : DrmSchemeTest(scheme, "L3") {}
+    void decryptSampleWithAvBuffer_pos();
+    void removedKeysAndClosedSessionRejectDecrypt_neg();
+    void secureSessionAndDecoderRequirement_pos();
 };
 
 /**
@@ -593,23 +441,34 @@ public:
  * |03|Compare output with the independent plaintext fixture|Decrypted and expected bytes|All bytes match exactly|Does not validate decoder playback|
  * |04|Release DRM and AVBuffer resources|Session and allocated handles|All resources are released|Should Pass|
  */
-UT_ADD_TEST(VTS_L3_Drm, decryptSampleWithAvBuffer_pos) {
+void L3Cases::decryptSampleWithAvBuffer_pos() {
     if (!enabled()) {
         return;
+    }
+    bool protectedOutput = false;
+    UT_ASSERT_TRUE_FATAL(probeProtectedOutput(&protectedOutput));
+    if (protectedOutput) {
+        UT_LOG_INFO("SKIP: secure decoder required; CPU-readable plaintext comparison is not applicable");
+        UT_IGNORE_TEST();
     }
     SampleFixture fixture;
     UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
 
     LicensedSession licensed;
     UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    UT_ASSERT_TRUE_FATAL(requiresProtectedOutput(licensed, &protectedOutput));
+    if (protectedOutput) {
+        UT_ASSERT_TRUE_FATAL(licensed.close());
+        UT_LOG_INFO("SKIP: secure decoder required; CPU-readable plaintext comparison is not applicable");
+        UT_IGNORE_TEST();
+    }
     SampleBuffers buffers;
     UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
     UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
 
     int32_t decryptedBytes = 0;
-    const Status status = licensed.crypto->decrypt(
-            buffers.decryptArgs(fixture), &decryptedBytes);
-    UT_ASSERT_TRUE_FATAL(status.isOk());
+    DRM_CRYPTO_PLUGIN_DECRYPT_SUCCESS(
+            licensed.crypto, sampleDecryptArgs(fixture, buffers), decryptedBytes);
     UT_ASSERT_EQUAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
 
     std::vector<uint8_t> decrypted;
@@ -636,26 +495,43 @@ UT_ADD_TEST(VTS_L3_Drm, decryptSampleWithAvBuffer_pos) {
  * |03|Close the DRM session and retry decrypt|Closed session and sample|Returns ERROR_DRM_SESSION_NOT_OPENED|Stale-key use is rejected|
  * |04|Release resources|Session and allocated handles|All resources are released|Should Pass|
  */
-UT_ADD_TEST(VTS_L3_Drm, removedKeysAndClosedSessionRejectDecrypt_neg) {
+void L3Cases::removedKeysAndClosedSessionRejectDecrypt_neg() {
     if (!enabled()) {
         return;
+    }
+    bool protectedOutput = false;
+    UT_ASSERT_TRUE_FATAL(probeProtectedOutput(&protectedOutput));
+    if (protectedOutput) {
+        UT_LOG_INFO("SKIP: secure decoder required; non-secure AVBuffer negative tests are not applicable");
+        UT_IGNORE_TEST();
     }
     SampleFixture fixture;
     UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
 
     LicensedSession licensed;
     UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    UT_ASSERT_TRUE_FATAL(requiresProtectedOutput(licensed, &protectedOutput));
+    if (protectedOutput) {
+        UT_ASSERT_TRUE_FATAL(licensed.close());
+        UT_LOG_INFO("SKIP: secure decoder required; non-secure AVBuffer negative tests are not applicable");
+        UT_IGNORE_TEST();
+    }
     SampleBuffers buffers;
     UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
     UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
-    const DecryptArgs args = buffers.decryptArgs(fixture);
+    const DecryptArgs args = sampleDecryptArgs(fixture, buffers);
 
-    UT_ASSERT_TRUE(licensed.drm->removeKeys(licensed.session).isOk());
     int32_t decryptedBytes = 0;
+    DRM_CRYPTO_PLUGIN_DECRYPT_SUCCESS(licensed.crypto, args, decryptedBytes);
+    UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
+    std::vector<uint8_t> baseline;
+    UT_ASSERT_TRUE_FATAL(buffers.readDestination(&baseline, fixture.plaintext.size()));
+    UT_ASSERT_TRUE_FATAL(baseline == fixture.plaintext);
+    DRM_PLUGIN_REMOVE_KEYS_SUCCESS(licensed.drm, licensed.session);
     Status status = licensed.crypto->decrypt(args, &decryptedBytes);
     UT_ASSERT_TRUE(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_NO_LICENSE));
 
-    UT_ASSERT_TRUE(licensed.close());
+    UT_ASSERT_TRUE_FATAL(licensed.close());
     status = licensed.crypto->decrypt(args, &decryptedBytes);
     UT_ASSERT_TRUE(hasServiceSpecificError(
             status, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
@@ -682,16 +558,26 @@ UT_ADD_TEST(VTS_L3_Drm, removedKeysAndClosedSessionRejectDecrypt_neg) {
  * |02|Query secure decoder requirements|DRM_L3_MIME_TYPE|The crypto plugin requires a secure decoder|Capability only|
  * |03|Close the DRM session|Session ID|Session closes successfully|Should Pass|
  */
-UT_ADD_TEST(VTS_L3_Drm, secureSessionAndDecoderRequirement_pos) {
+void L3Cases::secureSessionAndDecoderRequirement_pos() {
     if (!enabled() || !secureSessionTestEnabled()) {
-        return;
+        UT_IGNORE_TEST();
     }
     SecurityLevel requiredLevel = SecurityLevel::UNKNOWN;
-    UT_ASSERT_TRUE_FATAL(parseSecurityLevel(
+    UT_ASSERT_TRUE_FATAL(vts_drm_parse_security_level(
             vts_drm_config_value("DRM_L3_REQUIRED_SECURITY_LEVEL"), &requiredLevel));
+    UT_ASSERT_TRUE_FATAL(requiredLevel != SecurityLevel::DEFAULT);
 
     const char* mimeType = vts_drm_config_value("DRM_L3_MIME_TYPE");
     UT_ASSERT_TRUE_FATAL(mimeType != nullptr && mimeType[0] != '\0');
+    const char* codec = codecMimeType();
+    UT_ASSERT_TRUE_FATAL(codec != nullptr && codec[0] != '\0');
+    bool supported = false;
+    UT_ASSERT_TRUE_FATAL(vts_drm_content_supported(mimeType, requiredLevel, &supported));
+    if (!supported && !vts_drm_active_profile()->required) {
+        UT_LOG_INFO("SKIP: optional secure-session security level not advertised");
+        UT_IGNORE_TEST();
+    }
+    UT_ASSERT_TRUE_FATAL(supported);
 
     Uuid uuid;
     UT_ASSERT_TRUE_FATAL(vts_drm_getSupportedUuid(&uuid).isOk());
@@ -705,16 +591,35 @@ UT_ADD_TEST(VTS_L3_Drm, secureSessionAndDecoderRequirement_pos) {
     UT_ASSERT_TRUE_FATAL(session.open(drm, requiredLevel));
 
     SecurityLevel actualLevel = SecurityLevel::UNKNOWN;
-    UT_ASSERT_TRUE_FATAL(drm->getSecurityLevel(session.id(), &actualLevel).isOk());
+    DRM_PLUGIN_GET_SECURITY_LEVEL_SUCCESS(drm, session.id(), actualLevel);
     UT_ASSERT_EQUAL(actualLevel, requiredLevel);
 
+    DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_SUCCESS(crypto, session.id());
     bool secureDecoderRequired = false;
-    UT_ASSERT_TRUE_FATAL(crypto->requiresSecureDecoderComponent(
-            mimeType, &secureDecoderRequired).isOk());
+    DRM_CRYPTO_PLUGIN_REQUIRES_SECURE_DECODER_COMPONENT_SUCCESS(
+            crypto, codec, secureDecoderRequired);
     UT_ASSERT_TRUE(secureDecoderRequired);
 
     UT_ASSERT_TRUE(session.close());
 }
+
+#define DRM_L3_SCHEME(Suite, Scheme) \
+    class Suite : public L3Cases { \
+    public: Suite() : L3Cases(Scheme) {} \
+    }; \
+    UT_ADD_TEST_TO_GROUP(Suite, UT_TESTS_L3) \
+    UT_ADD_TEST(Suite, decryptSampleWithAvBuffer_pos) { L3Cases::decryptSampleWithAvBuffer_pos(); } \
+    UT_ADD_TEST(Suite, removedKeysAndClosedSessionRejectDecrypt_neg) { \
+        L3Cases::removedKeysAndClosedSessionRejectDecrypt_neg(); \
+    } \
+    UT_ADD_TEST(Suite, secureSessionAndDecoderRequirement_pos) { \
+        L3Cases::secureSessionAndDecoderRequirement_pos(); \
+    }
+
+DRM_L3_SCHEME(VTS_L3_Drm, "clearkey")
+DRM_L3_SCHEME(VTS_L3_DrmWidevine, "widevine")
+DRM_L3_SCHEME(VTS_L3_DrmPlayReady, "playready")
+#undef DRM_L3_SCHEME
 
 /** @} */ // End of DRM_HALTEST_L3
 /** @} */ // End of DRM_HALTEST
