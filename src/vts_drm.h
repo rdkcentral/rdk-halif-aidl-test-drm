@@ -145,6 +145,63 @@ private:
                 static_cast<int32_t>(expectedError)) << #call; \
     } while (0)
 
+#define DRM_CALL_FAILURE_ONE_OF(call, firstError, secondError) \
+    do { \
+        UT_LOG_INFO("Calling %s", #call); \
+        const Status drmStatus = (call); \
+        UT_LOG_INFO("Result %s, status:[isOK:%s, exception:%d, error:%d]", \
+                #call, drmStatus.isOk() ? "true" : "false", \
+                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+        UT_ASSERT_FALSE(drmStatus.isOk()) << #call; \
+        UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) << #call; \
+        const int32_t error = drmStatus.serviceSpecificErrorCode(); \
+        UT_ASSERT_TRUE(error == static_cast<int32_t>(firstError) || \
+                error == static_cast<int32_t>(secondError)) << #call; \
+    } while (0)
+
+#define DRM_PLUGIN_CLOSE_SESSION_FAILURE(drmPlugin, session, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->closeSession(session), expectedError)
+#define DRM_PLUGIN_GET_PROPERTY_BYTE_ARRAY_FAILURE(drmPlugin, property, value, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->getPropertyByteArray(property, &(value)), expectedError)
+#define DRM_PLUGIN_SET_PROPERTY_STRING_FAILURE(drmPlugin, property, value, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->setPropertyString(property, value), expectedError)
+#define DRM_PLUGIN_SET_PROPERTY_BYTE_ARRAY_FAILURE(drmPlugin, property, value, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->setPropertyByteArray(property, value), expectedError)
+#define DRM_PLUGIN_QUERY_KEY_STATUS_FAILURE(drmPlugin, session, keyStatus, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->queryKeyStatus(session, &(keyStatus)), expectedError)
+#define DRM_PLUGIN_REMOVE_KEYS_FAILURE(drmPlugin, session, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->removeKeys(session), expectedError)
+#define DRM_PLUGIN_GET_KEY_REQUEST_FAILURE(drmPlugin, scope, initData, mime, keyType, parameters, request, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->getKeyRequest( \
+            scope, initData, mime, keyType, parameters, &(request)), expectedError)
+#define DRM_PLUGIN_GET_KEY_REQUEST_FAILURE_ONE_OF( \
+        drmPlugin, scope, initData, mime, keyType, parameters, request, firstError, secondError) \
+    DRM_CALL_FAILURE_ONE_OF((drmPlugin)->getKeyRequest( \
+            scope, initData, mime, keyType, parameters, &(request)), firstError, secondError)
+#define DRM_PLUGIN_PROVIDE_KEY_RESPONSE_FAILURE(drmPlugin, scope, response, keySetId, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->provideKeyResponse(scope, response, &(keySetId)), expectedError)
+#define DRM_PLUGIN_PROVIDE_PROVISION_RESPONSE_FAILURE(drmPlugin, response, result, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->provideProvisionResponse(response, &(result)), expectedError)
+#define DRM_PLUGIN_SET_PLAYBACK_ID_FAILURE(drmPlugin, session, playbackId, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->setPlaybackId(session, playbackId), expectedError)
+#define DRM_PLUGIN_SET_CIPHER_ALGORITHM_FAILURE(drmPlugin, session, algorithm, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->setCipherAlgorithm(session, algorithm), expectedError)
+#define DRM_PLUGIN_SET_MAC_ALGORITHM_FAILURE(drmPlugin, session, algorithm, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->setMacAlgorithm(session, algorithm), expectedError)
+#define DRM_PLUGIN_DECRYPT_FAILURE(drmPlugin, session, keyId, input, iv, output, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->decrypt(session, keyId, input, iv, &(output)), expectedError)
+#define DRM_PLUGIN_ENCRYPT_FAILURE(drmPlugin, session, keyId, input, iv, output, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->encrypt(session, keyId, input, iv, &(output)), expectedError)
+#define DRM_PLUGIN_SIGN_FAILURE(drmPlugin, session, keyId, message, signature, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->sign(session, keyId, message, &(signature)), expectedError)
+#define DRM_PLUGIN_VERIFY_FAILURE(drmPlugin, session, keyId, message, signature, verified, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->verify(session, keyId, message, signature, &(verified)), expectedError)
+#define DRM_PLUGIN_SIGN_RSA_FAILURE(drmPlugin, session, algorithm, message, wrappedKey, signature, expectedError) \
+    DRM_CALL_FAILURE((drmPlugin)->signRSA( \
+            session, algorithm, message, wrappedKey, &(signature)), expectedError)
+#define DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_FAILURE(cryptoPlugin, session, expectedError) \
+    DRM_CALL_FAILURE((cryptoPlugin)->setMediaDrmSession(session), expectedError)
+
 #define DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes) \
     do { \
         Status drmStatus; \
@@ -264,6 +321,20 @@ private:
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
 
+#define DRM_PLUGIN_GET_SECURITY_LEVEL_FAILURE(drmPlugin, session, level, expectedError) \
+    do { \
+        UT_LOG_INFO("Calling IDrmPlugin::getSecurityLevel()"); \
+        const Status drmStatus = (drmPlugin)->getSecurityLevel(session, &(level)); \
+        UT_LOG_INFO("Result IDrmPlugin::getSecurityLevel(), status:[isOK:%s, exception:%d, error:%d]", \
+                drmStatus.isOk() ? "true" : "false", \
+                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+        UT_ASSERT_FALSE(drmStatus.isOk()) << "IDrmPlugin::getSecurityLevel()"; \
+        UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) \
+                << "IDrmPlugin::getSecurityLevel()"; \
+        UT_ASSERT_EQUAL(drmStatus.serviceSpecificErrorCode(), \
+                static_cast<int32_t>(expectedError)) << "IDrmPlugin::getSecurityLevel()"; \
+    } while (0)
+
 #define DRM_PLUGIN_GET_HDCP_LEVELS_SUCCESS(drmPlugin, levels) \
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getHdcpLevels()"); \
@@ -286,6 +357,38 @@ private:
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
 
+#define DRM_PLUGIN_GET_METRICS_SUCCESS(drmPlugin, metrics) \
+    do { \
+        UT_LOG_INFO("Calling IDrmPlugin::getMetrics()"); \
+        const Status drmStatus = (drmPlugin)->getMetrics(&(metrics)); \
+        UT_LOG_INFO("Result IDrmPlugin::getMetrics(), status:[isOK:%s, exception:%d, error:%d]", \
+                drmStatus.isOk() ? "true" : "false", \
+                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+        if (!drmStatus.isOk() && \
+                drmStatus.exceptionCode() == Status::EX_SERVICE_SPECIFIC && \
+                drmStatus.serviceSpecificErrorCode() == static_cast<int32_t>( \
+                        com::rdk::hal::drm::DrmErrors::ERROR_DRM_INVALID_STATE)) { \
+            UT_LOG_INFO("SKIP: provider reports metrics are unavailable"); \
+            UT_IGNORE_TEST(); \
+        } \
+        UT_ASSERT_TRUE_FATAL(drmStatus.isOk()) << drmStatus.toString8().c_str(); \
+        UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
+    } while (0)
+
+#define DRM_PLUGIN_GET_METRICS_FAILURE(drmPlugin, metrics, expectedError) \
+    do { \
+        UT_LOG_INFO("Calling IDrmPlugin::getMetrics()"); \
+        const Status drmStatus = (drmPlugin)->getMetrics(&(metrics)); \
+        UT_LOG_INFO("Result IDrmPlugin::getMetrics(), status:[isOK:%s, exception:%d, error:%d]", \
+                drmStatus.isOk() ? "true" : "false", \
+                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+        UT_ASSERT_FALSE(drmStatus.isOk()) << "IDrmPlugin::getMetrics()"; \
+        UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) \
+                << "IDrmPlugin::getMetrics()"; \
+        UT_ASSERT_EQUAL(drmStatus.serviceSpecificErrorCode(), \
+                static_cast<int32_t>(expectedError)) << "IDrmPlugin::getMetrics()"; \
+    } while (0)
+
 #define DRM_PLUGIN_GET_PROPERTY_STRING_SUCCESS(drmPlugin, property, value) \
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getPropertyString()"); \
@@ -294,6 +397,38 @@ private:
                 drmStatus.isOk() ? "true" : "false", \
                 drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
+        UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
+    } while (0)
+
+#define DRM_PLUGIN_GET_PROPERTY_STRING_FAILURE(drmPlugin, property, value, expectedError) \
+    do { \
+        UT_LOG_INFO("Calling IDrmPlugin::getPropertyString()"); \
+        const Status drmStatus = (drmPlugin)->getPropertyString((property), &(value)); \
+        UT_LOG_INFO("Result IDrmPlugin::getPropertyString(), status:[isOK:%s, exception:%d, error:%d]", \
+                drmStatus.isOk() ? "true" : "false", \
+                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+        UT_ASSERT_FALSE(drmStatus.isOk()) << "IDrmPlugin::getPropertyString()"; \
+        UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) \
+                << "IDrmPlugin::getPropertyString()"; \
+        UT_ASSERT_EQUAL(drmStatus.serviceSpecificErrorCode(), \
+                static_cast<int32_t>(expectedError)) << "IDrmPlugin::getPropertyString()"; \
+    } while (0)
+
+#define DRM_PLUGIN_GET_PROPERTY_BYTE_ARRAY_SUCCESS(drmPlugin, property, value) \
+    do { \
+        UT_LOG_INFO("Calling IDrmPlugin::getPropertyByteArray()"); \
+        const Status drmStatus = (drmPlugin)->getPropertyByteArray((property), &(value)); \
+        UT_LOG_INFO("Result IDrmPlugin::getPropertyByteArray(), status:[isOK:%s, exception:%d, error:%d]", \
+                drmStatus.isOk() ? "true" : "false", \
+                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+        if (!drmStatus.isOk() && \
+                drmStatus.exceptionCode() == Status::EX_SERVICE_SPECIFIC && \
+                drmStatus.serviceSpecificErrorCode() == static_cast<int32_t>( \
+                        com::rdk::hal::drm::DrmErrors::ERROR_DRM_CANNOT_HANDLE)) { \
+            UT_LOG_INFO("SKIP: provider does not support this byte-array property"); \
+            UT_IGNORE_TEST(); \
+        } \
+        UT_ASSERT_TRUE_FATAL(drmStatus.isOk()) << drmStatus.toString8().c_str(); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
 
@@ -329,6 +464,16 @@ private:
                 drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
+    } while (0)
+
+#define DRM_PLUGIN_GET_PROVISION_REQUEST(drmPlugin, certificateType, certificateAuthority, request, resultStatus) \
+    do { \
+        UT_LOG_INFO("Calling IDrmPlugin::getProvisionRequest()"); \
+        (resultStatus) = (drmPlugin)->getProvisionRequest( \
+                (certificateType), (certificateAuthority), &(request)); \
+        UT_LOG_INFO("Result IDrmPlugin::getProvisionRequest(), status:[isOK:%s, exception:%d, error:%d]", \
+                (resultStatus).isOk() ? "true" : "false", \
+                (resultStatus).exceptionCode(), (resultStatus).serviceSpecificErrorCode()); \
     } while (0)
 
 #define DRM_PLUGIN_PROVIDE_PROVISION_RESPONSE_SUCCESS(drmPlugin, response, result) \

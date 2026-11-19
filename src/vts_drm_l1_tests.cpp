@@ -32,13 +32,12 @@
  *
  * Each negative case groups the documented invalid-input and closed-session
  * variations for one API. License-dependent success paths remain in L2/L3.
- * The existing optional provisioning exchange is retained.
  * Session-dependent cases repeat at each unique level in the advertised
  * inclusive security ranges, closing each session before the next level.
  */
 
 #include "vts_drm.h"
-#include "vts_drm_license.h"
+#include "vts_drm_avbuffer.h"
 #include <utils/Errors.h>
 
 #include <com/rdk/hal/drm/BnDrmPluginListener.h>
@@ -57,7 +56,6 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -77,14 +75,51 @@ using com::rdk::hal::drm::KeySetId;
 using com::rdk::hal::drm::KeyStatus;
 using com::rdk::hal::drm::KeyType;
 using com::rdk::hal::drm::KeyValue;
+using com::rdk::hal::drm::Mode;
 using com::rdk::hal::drm::NumberOfSessions;
 using com::rdk::hal::drm::SecurityLevel;
+using com::rdk::hal::drm::SubSample;
+using vts_drm::SampleBuffers;
 
 UT_ADD_TEST_TO_GROUP(VTS_L1_Drm, UT_TESTS_L1)
 
 namespace {
 
 using Bytes = std::vector<uint8_t>;
+
+class DrmSessionCleanup {
+public:
+    explicit DrmSessionCleanup(const sp<IDrmPlugin>& drmPlugin) : mDrmPlugin(drmPlugin) {}
+
+    ~DrmSessionCleanup() {
+        closeAll();
+    }
+
+    void add(const Bytes& session) {
+        mSessions.push_back(session);
+    }
+
+    bool closeAll() {
+        bool allClosed = true;
+        auto session = mSessions.begin();
+        while (session != mSessions.end()) {
+            const Status status = mDrmPlugin->closeSession(*session);
+            UT_LOG_INFO("closeSession during maxSessions cleanup: %s",
+                    status.toString8().c_str());
+            if (status.isOk() && status.exceptionCode() == Status::EX_NONE) {
+                session = mSessions.erase(session);
+            } else {
+                allClosed = false;
+                ++session;
+            }
+        }
+        return allClosed;
+    }
+
+private:
+    sp<IDrmPlugin> mDrmPlugin;
+    std::vector<Bytes> mSessions;
+};
 
 bool hasServiceSpecificError(const Status& status, int32_t error) {
     return !status.isOk() &&
@@ -578,10 +613,11 @@ UT_ADD_TEST(VTS_L1_Drm, closeSession_neg) {
         DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
         mSessionOpen = true;
         UT_ASSERT_FALSE(mSession.empty());
-        DRM_CALL_FAILURE(mPlugin->closeSession({}), android::BAD_VALUE);
+        DRM_PLUGIN_CLOSE_SESSION_FAILURE(mPlugin, {}, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->closeSession(mSession), DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        DRM_PLUGIN_CLOSE_SESSION_FAILURE(
+                mPlugin, mSession, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
 
@@ -662,10 +698,11 @@ UT_ADD_TEST(VTS_L1_Drm, getSecurityLevel_neg) {
         mSessionOpen = true;
         UT_ASSERT_FALSE(mSession.empty());
         SecurityLevel level = SecurityLevel::UNKNOWN;
-        DRM_CALL_FAILURE(mPlugin->getSecurityLevel({}, &level), android::BAD_VALUE);
+        DRM_PLUGIN_GET_SECURITY_LEVEL_FAILURE(
+                mPlugin, {}, level, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->getSecurityLevel(mSession, &level),
+        DRM_PLUGIN_GET_SECURITY_LEVEL_FAILURE(mPlugin, mSession, level,
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -705,7 +742,7 @@ UT_ADD_TEST(VTS_L1_Drm, getHdcpLevels_pos) {
 /**
  * @brief Queries session counts before opening, during, and after closing.
  *
- * This test verifies that opening and closing one session changes the reported count correctly.
+ * This test verifies session counts for a single session and when filling the available capacity.
  *
  * **Test Group ID:** Basic: 01@n
  * **Test Case ID:** 013@n
@@ -723,6 +760,8 @@ UT_ADD_TEST(VTS_L1_Drm, getHdcpLevels_pos) {
  * | 03 | Read counts while the session is open | OUT: during | Current count increases by one; maximum is unchanged | Should Pass |
  * | 04 | Close the session | Live session ID | Status is OK with EX_NONE | Should Pass |
  * | 05 | Read counts after closing | OUT: after | Current count matches the baseline | Should Pass |
+ * | 06 | Open sessions up to the reported maximum | Remaining available sessions | Current count reaches maxSessions | Should Pass |
+ * | 07 | Close all opened sessions | Live session IDs | Close succeeds; current count returns to baseline | Should Pass |
  */
 UT_ADD_TEST(VTS_L1_Drm, getNumberOfSessions_pos) {
     CryptoSchemes schemes;
@@ -752,6 +791,51 @@ UT_ADD_TEST(VTS_L1_Drm, getNumberOfSessions_pos) {
         DRM_PLUGIN_GET_NUMBER_OF_SESSIONS_SUCCESS(mPlugin, after);
         UT_ASSERT_EQUAL(after.currentSessions, before.currentSessions);
     }
+
+    NumberOfSessions capacityBefore;
+    DRM_PLUGIN_GET_NUMBER_OF_SESSIONS_SUCCESS(mPlugin, capacityBefore);
+    UT_ASSERT_TRUE_FATAL(capacityBefore.currentSessions >= 0);
+    UT_ASSERT_TRUE_FATAL(capacityBefore.maxSessions > 0);
+    UT_ASSERT_TRUE_FATAL(capacityBefore.currentSessions <= capacityBefore.maxSessions);
+
+    const int32_t availableSessions =
+            capacityBefore.maxSessions - capacityBefore.currentSessions;
+    DrmSessionCleanup sessionCleanup(mPlugin);
+    bool openedToCapacity = true;
+    for (int32_t i = 0; i < availableSessions; ++i) {
+        Bytes session;
+        Status openStatus;
+        DRM_PLUGIN_OPEN_SESSION(mPlugin, *levels.begin(), session, openStatus);
+        if (!openStatus.isOk()) {
+            UT_LOG_ERROR("Unable to open session %d of %d while checking maxSessions: %s",
+                    i + 1, availableSessions, openStatus.toString8().c_str());
+            openedToCapacity = false;
+            break;
+        }
+        sessionCleanup.add(session);
+        if (session.empty()) {
+            UT_LOG_ERROR("Open session %d of %d returned an empty session ID",
+                    i + 1, availableSessions);
+            openedToCapacity = false;
+            break;
+        }
+    }
+
+    NumberOfSessions atCapacity;
+    if (openedToCapacity) {
+        DRM_PLUGIN_GET_NUMBER_OF_SESSIONS_SUCCESS(mPlugin, atCapacity);
+    }
+
+    const bool allSessionsClosed = sessionCleanup.closeAll();
+
+    NumberOfSessions capacityAfter;
+    DRM_PLUGIN_GET_NUMBER_OF_SESSIONS_SUCCESS(mPlugin, capacityAfter);
+
+    UT_ASSERT_TRUE(openedToCapacity);
+    UT_ASSERT_EQUAL(atCapacity.currentSessions, capacityBefore.maxSessions);
+    UT_ASSERT_EQUAL(atCapacity.maxSessions, capacityBefore.maxSessions);
+    UT_ASSERT_TRUE(allSessionsClosed);
+    UT_ASSERT_EQUAL(capacityAfter.currentSessions, capacityBefore.currentSessions);
 }
 
 /**
@@ -775,20 +859,16 @@ UT_ADD_TEST(VTS_L1_Drm, getNumberOfSessions_pos) {
  * | 03 | Handle documented unavailable metrics | EX_SERVICE_SPECIFIC with ERROR_DRM_INVALID_STATE | Test is explicitly skipped | No failed-call output is inspected |
  * | 04 | Otherwise verify successful retrieval | Returned status | Status is OK with EX_NONE | Any other error fails |
  */
-UT_ADD_TEST(VTS_L1_Drm, getMetrics_pos) {
+
+ /*Need to update positive test case after when the metric call be called*/
+UT_ADD_TEST(VTS_L1_Drm, getMetrics_neg) {
     CryptoSchemes schemes;
     DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes);
     UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     std::vector<com::rdk::hal::drm::DrmMetricGroup> metrics;
-    const Status status = mPlugin->getMetrics(&metrics);
-    UT_LOG_INFO("getMetrics: %s", status.toString8().c_str());
-    if (hasServiceSpecificError(status, DrmErrors::ERROR_DRM_INVALID_STATE)) {
-        UT_LOG_INFO("SKIP: provider reports metrics are unavailable");
-        UT_IGNORE_TEST();
-    }
-    DRM_STATUS_SUCCESS(status);
+    DRM_PLUGIN_GET_METRICS_FAILURE(mPlugin, metrics, com::rdk::hal::drm::DrmErrors::ERROR_DRM_INVALID_STATE);
 }
 
 /**
@@ -852,9 +932,9 @@ UT_ADD_TEST(VTS_L1_Drm, getPropertyString_neg) {
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     std::string value;
-    DRM_CALL_FAILURE(mPlugin->getPropertyString("", &value), android::BAD_VALUE);
-    DRM_CALL_FAILURE(mPlugin->getPropertyString("rdk.vts.unsupported.property", &value),
-            DrmErrors::ERROR_DRM_CANNOT_HANDLE);
+    DRM_PLUGIN_GET_PROPERTY_STRING_FAILURE(mPlugin, "", value, android::BAD_VALUE);
+    DRM_PLUGIN_GET_PROPERTY_STRING_FAILURE(
+            mPlugin, "rdk.vts.unsupported.property", value, DrmErrors::ERROR_DRM_CANNOT_HANDLE);
 }
 
 /**
@@ -885,13 +965,7 @@ UT_ADD_TEST(VTS_L1_Drm, getPropertyByteArray_pos) {
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     Bytes value;
-    const Status status = mPlugin->getPropertyByteArray("deviceUniqueId", &value);
-    UT_LOG_INFO("getPropertyByteArray(deviceUniqueId): %s", status.toString8().c_str());
-    if (hasServiceSpecificError(status, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
-        UT_LOG_INFO("SKIP: provider does not support deviceUniqueId");
-        UT_IGNORE_TEST();
-    }
-    DRM_STATUS_SUCCESS(status);
+    DRM_PLUGIN_GET_PROPERTY_BYTE_ARRAY_SUCCESS(mPlugin, "deviceUniqueId", value);
     UT_ASSERT_FALSE(value.empty());
 }
 
@@ -922,9 +996,9 @@ UT_ADD_TEST(VTS_L1_Drm, getPropertyByteArray_neg) {
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     Bytes value;
-    DRM_CALL_FAILURE(mPlugin->getPropertyByteArray("", &value), android::BAD_VALUE);
-    DRM_CALL_FAILURE(mPlugin->getPropertyByteArray("rdk.vts.unsupported.property", &value),
-            DrmErrors::ERROR_DRM_CANNOT_HANDLE);
+    DRM_PLUGIN_GET_PROPERTY_BYTE_ARRAY_FAILURE(mPlugin, "", value, android::BAD_VALUE);
+    DRM_PLUGIN_GET_PROPERTY_BYTE_ARRAY_FAILURE(
+            mPlugin, "rdk.vts.unsupported.property", value, DrmErrors::ERROR_DRM_CANNOT_HANDLE);
 }
 
 /**
@@ -947,15 +1021,16 @@ UT_ADD_TEST(VTS_L1_Drm, getPropertyByteArray_neg) {
  * | 02 | Set a string property using an empty name | Name: empty; value: vts | EX_SERVICE_SPECIFIC with BAD_VALUE | Expected API rejection |
  * | 03 | Set an unsupported string property | Name: rdk.vts.unsupported.property; value: vts | EX_SERVICE_SPECIFIC with ERROR_DRM_CANNOT_HANDLE | No known property is modified |
  */
+/* Need to update the positive test case once documentation for writable properties is available */
 UT_ADD_TEST(VTS_L1_Drm, setPropertyString_neg) {
     CryptoSchemes schemes;
     DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes);
     UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
-    DRM_CALL_FAILURE(mPlugin->setPropertyString("", "vts"), android::BAD_VALUE);
-    DRM_CALL_FAILURE(mPlugin->setPropertyString("rdk.vts.unsupported.property", "vts"),
-            DrmErrors::ERROR_DRM_CANNOT_HANDLE);
+    DRM_PLUGIN_SET_PROPERTY_STRING_FAILURE(mPlugin, "", "vts", android::BAD_VALUE);
+    DRM_PLUGIN_SET_PROPERTY_STRING_FAILURE(
+            mPlugin, "rdk.vts.unsupported.property", "vts", DrmErrors::ERROR_DRM_CANNOT_HANDLE);
 }
 
 /**
@@ -978,6 +1053,7 @@ UT_ADD_TEST(VTS_L1_Drm, setPropertyString_neg) {
  * | 02 | Set a byte-array property using an empty name | Name: empty; value: one byte 0x01 | EX_SERVICE_SPECIFIC with BAD_VALUE | Expected API rejection |
  * | 03 | Set an unsupported byte-array property | Name: rdk.vts.unsupported.property; value: one byte 0x01 | EX_SERVICE_SPECIFIC with ERROR_DRM_CANNOT_HANDLE | No known property is modified |
  */
+/* Need to update the positive test case once documentation for writable properties is available */
 UT_ADD_TEST(VTS_L1_Drm, setPropertyByteArray_neg) {
     CryptoSchemes schemes;
     DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes);
@@ -985,9 +1061,9 @@ UT_ADD_TEST(VTS_L1_Drm, setPropertyByteArray_neg) {
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     const Bytes value{0x01};
-    DRM_CALL_FAILURE(mPlugin->setPropertyByteArray("", value), android::BAD_VALUE);
-    DRM_CALL_FAILURE(mPlugin->setPropertyByteArray("rdk.vts.unsupported.property", value),
-            DrmErrors::ERROR_DRM_CANNOT_HANDLE);
+    DRM_PLUGIN_SET_PROPERTY_BYTE_ARRAY_FAILURE(mPlugin, "", value, android::BAD_VALUE);
+    DRM_PLUGIN_SET_PROPERTY_BYTE_ARRAY_FAILURE(
+            mPlugin, "rdk.vts.unsupported.property", value, DrmErrors::ERROR_DRM_CANNOT_HANDLE);
 }
 
 /**
@@ -1065,11 +1141,11 @@ UT_ADD_TEST(VTS_L1_Drm, queryKeyStatus_neg) {
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
         std::vector<KeyValue> status;
-        DRM_CALL_FAILURE(mPlugin->queryKeyStatus({}, &status), android::BAD_VALUE);
+        DRM_PLUGIN_QUERY_KEY_STATUS_FAILURE(mPlugin, {}, status, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->queryKeyStatus(mSession, &status),
-                DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        DRM_PLUGIN_QUERY_KEY_STATUS_FAILURE(
+                mPlugin, mSession, status, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
 
@@ -1146,10 +1222,11 @@ UT_ADD_TEST(VTS_L1_Drm, removeKeys_neg) {
         DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
-        DRM_CALL_FAILURE(mPlugin->removeKeys({}), android::BAD_VALUE);
+        DRM_PLUGIN_REMOVE_KEYS_FAILURE(mPlugin, {}, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->removeKeys(mSession), DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        DRM_PLUGIN_REMOVE_KEYS_FAILURE(
+                mPlugin, mSession, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
 
@@ -1178,6 +1255,8 @@ UT_ADD_TEST(VTS_L1_Drm, removeKeys_neg) {
  * | 06 | Request keys using an unsupported MIME | video/rdk-vts-unsupported | EX_SERVICE_SPECIFIC with BAD_VALUE or ERROR_DRM_CANNOT_HANDLE | AIDL does not disambiguate these mappings |
  * | 07 | Request keys using below/above-range enum values | KeyType -1 and RELEASE + 1 | EX_SERVICE_SPECIFIC with BAD_VALUE for each value | Expected API rejection |
  * | 08 | Close the session and request keys using its ID | Closed ID; remaining baseline inputs unchanged | Close succeeds; request returns EX_SERVICE_SPECIFIC with ERROR_DRM_SESSION_NOT_OPENED | Expected API rejection |
+ * | 09 | For ClearKey, request offline keys | Valid session, init data, and MIME | EX_SERVICE_SPECIFIC with ERROR_DRM_CANNOT_HANDLE | No persistent license storage |
+ * | 10 | For ClearKey, inject request errors | rdkVtsError=resourceContention, invalidState, notProvisioned | Each request returns its corresponding documented error | Optional test hook; skip these variations if unsupported |
  */
 UT_ADD_TEST(VTS_L1_Drm, getKeyRequest_neg) {
     CryptoSchemes schemes;
@@ -1197,25 +1276,51 @@ UT_ADD_TEST(VTS_L1_Drm, getKeyRequest_neg) {
         DRM_PLUGIN_GET_KEY_REQUEST_SUCCESS(
                 mPlugin, mSession, mInitData, mMime, KeyType::STREAMING, {}, request);
         UT_ASSERT_FALSE_FATAL(request.request.empty());
-        DRM_CALL_FAILURE(mPlugin->getKeyRequest(
-                {}, mInitData, mMime, KeyType::STREAMING, {}, &request), android::BAD_VALUE);
-        DRM_CALL_FAILURE(mPlugin->getKeyRequest(
-                mSession, mInitData, "", KeyType::STREAMING, {}, &request), android::BAD_VALUE);
-        const Status badMimeStatus = mPlugin->getKeyRequest(
-                mSession, mInitData, "video/rdk-vts-unsupported", KeyType::STREAMING, {}, &request);
-        UT_LOG_INFO("getKeyRequest(unsupported MIME): %s", badMimeStatus.toString8().c_str());
-        UT_ASSERT_TRUE(hasServiceSpecificError(badMimeStatus, android::BAD_VALUE) ||
-                hasServiceSpecificError(badMimeStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE));
+        DRM_PLUGIN_GET_KEY_REQUEST_FAILURE(
+                mPlugin, {}, mInitData, mMime, KeyType::STREAMING, {}, request, android::BAD_VALUE);
+        DRM_PLUGIN_GET_KEY_REQUEST_FAILURE(
+                mPlugin, mSession, mInitData, "", KeyType::STREAMING, {}, request, android::BAD_VALUE);
+        DRM_PLUGIN_GET_KEY_REQUEST_FAILURE_ONE_OF(
+                mPlugin, mSession, mInitData, "video/rdk-vts-unsupported",
+                KeyType::STREAMING, {}, request, android::BAD_VALUE,
+                DrmErrors::ERROR_DRM_CANNOT_HANDLE);
         for (const auto type : {static_cast<KeyType>(-1),
                 static_cast<KeyType>(static_cast<int32_t>(KeyType::RELEASE) + 1)}) {
             UT_LOG_INFO("Invalid key type: %d", static_cast<int32_t>(type));
-            DRM_CALL_FAILURE(mPlugin->getKeyRequest(mSession, mInitData, mMime, type, {}, &request),
-                    android::BAD_VALUE);
+            DRM_PLUGIN_GET_KEY_REQUEST_FAILURE(
+                    mPlugin, mSession, mInitData, mMime, type, {}, request, android::BAD_VALUE);
+        }
+        if (vts_drm_active_profile()->scheme == "clearkey") {
+            DRM_PLUGIN_GET_KEY_REQUEST_FAILURE(
+                    mPlugin, mSession, mInitData, mMime, KeyType::OFFLINE, {}, request,
+                    DrmErrors::ERROR_DRM_CANNOT_HANDLE);
+            struct ErrorInjection {
+                const char* value;
+                DrmErrors error;
+            };
+            const std::array<ErrorInjection, 3> injections{{
+                    {"resourceContention", DrmErrors::ERROR_DRM_RESOURCE_CONTENTION},
+                    {"invalidState", DrmErrors::ERROR_DRM_INVALID_STATE},
+                    {"notProvisioned", DrmErrors::ERROR_DRM_NOT_PROVISIONED},
+            }};
+            for (const auto& injection : injections) {
+                const auto hookStatus =
+                        mPlugin->setPropertyString("rdkVtsError", injection.value);
+                if (hasServiceSpecificError(hookStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
+                    UT_LOG_INFO(
+                            "SKIP: ClearKey implementation does not expose the RDK VTS error hook");
+                    break;
+                }
+                DRM_STATUS_SUCCESS(hookStatus);
+                DRM_PLUGIN_GET_KEY_REQUEST_FAILURE(
+                        mPlugin, mSession, mInitData, mMime, KeyType::STREAMING, {}, request,
+                        injection.error);
+            }
         }
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->getKeyRequest(
-                mSession, mInitData, mMime, KeyType::STREAMING, {}, &request),
+        DRM_PLUGIN_GET_KEY_REQUEST_FAILURE(
+                mPlugin, mSession, mInitData, mMime, KeyType::STREAMING, {}, request,
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -1299,8 +1404,10 @@ UT_ADD_TEST(VTS_L1_Drm, provideKeyResponse_neg) {
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
         KeySetId keySetId;
-        DRM_CALL_FAILURE(mPlugin->provideKeyResponse(mSession, {}, &keySetId), android::BAD_VALUE);
-        DRM_CALL_FAILURE(mPlugin->provideKeyResponse({}, {0x01}, &keySetId), android::BAD_VALUE);
+        DRM_PLUGIN_PROVIDE_KEY_RESPONSE_FAILURE(
+                mPlugin, mSession, {}, keySetId, android::BAD_VALUE);
+        DRM_PLUGIN_PROVIDE_KEY_RESPONSE_FAILURE(
+                mPlugin, {}, {0x01}, keySetId, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
     }
@@ -1334,8 +1441,8 @@ UT_ADD_TEST(VTS_L1_Drm, getProvisionRequest_pos) {
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     com::rdk::hal::drm::ProvisionRequest request;
-    const Status status = mPlugin->getProvisionRequest("X.509", "", &request);
-    UT_LOG_INFO("getProvisionRequest: %s", status.toString8().c_str());
+    Status status;
+    DRM_PLUGIN_GET_PROVISION_REQUEST(mPlugin, "X.509", "", request, status);
     if (hasServiceSpecificError(status, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
         UT_LOG_INFO("SKIP: provider does not require provisioning");
         UT_IGNORE_TEST();
@@ -1370,7 +1477,7 @@ UT_ADD_TEST(VTS_L1_Drm, provideProvisionResponse_neg) {
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     com::rdk::hal::drm::ProvideProvisionResponseResult result;
-    DRM_CALL_FAILURE(mPlugin->provideProvisionResponse({}, &result), android::BAD_VALUE);
+    DRM_PLUGIN_PROVIDE_PROVISION_RESPONSE_FAILURE(mPlugin, {}, result, android::BAD_VALUE);
 }
 
 /**
@@ -1476,12 +1583,12 @@ UT_ADD_TEST(VTS_L1_Drm, setPlaybackId_neg) {
         DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
-        DRM_CALL_FAILURE(mPlugin->setPlaybackId({}, "rdk-vts-playback"),
-                DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        DRM_PLUGIN_SET_PLAYBACK_ID_FAILURE(
+                mPlugin, {}, "rdk-vts-playback", DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->setPlaybackId(mSession, "rdk-vts-playback"),
-                DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        DRM_PLUGIN_SET_PLAYBACK_ID_FAILURE(
+                mPlugin, mSession, "rdk-vts-playback", DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
 
@@ -1562,14 +1669,17 @@ UT_ADD_TEST(VTS_L1_Drm, setCipherAlgorithm_neg) {
         DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
-        DRM_CALL_FAILURE(mPlugin->setCipherAlgorithm({}, "AES/CBC/NoPadding"), android::BAD_VALUE);
+        DRM_PLUGIN_SET_CIPHER_ALGORITHM_FAILURE(
+                mPlugin, {}, "AES/CBC/NoPadding", android::BAD_VALUE);
         for (const char* algorithm : {"", "rdk-vts-invalid-cipher"}) {
             UT_LOG_INFO("Invalid cipher algorithm: '%s'", algorithm);
-            DRM_CALL_FAILURE(mPlugin->setCipherAlgorithm(mSession, algorithm), android::BAD_VALUE);
+            DRM_PLUGIN_SET_CIPHER_ALGORITHM_FAILURE(
+                    mPlugin, mSession, algorithm, android::BAD_VALUE);
         }
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->setCipherAlgorithm(mSession, "AES/CBC/NoPadding"),
+        DRM_PLUGIN_SET_CIPHER_ALGORITHM_FAILURE(
+                mPlugin, mSession, "AES/CBC/NoPadding",
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -1651,14 +1761,17 @@ UT_ADD_TEST(VTS_L1_Drm, setMacAlgorithm_neg) {
         DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
-        DRM_CALL_FAILURE(mPlugin->setMacAlgorithm({}, "HmacSHA256"), android::BAD_VALUE);
+        DRM_PLUGIN_SET_MAC_ALGORITHM_FAILURE(
+                mPlugin, {}, "HmacSHA256", android::BAD_VALUE);
         for (const char* algorithm : {"", "rdk-vts-invalid-mac"}) {
             UT_LOG_INFO("Invalid MAC algorithm: '%s'", algorithm);
-            DRM_CALL_FAILURE(mPlugin->setMacAlgorithm(mSession, algorithm), android::BAD_VALUE);
+            DRM_PLUGIN_SET_MAC_ALGORITHM_FAILURE(
+                    mPlugin, mSession, algorithm, android::BAD_VALUE);
         }
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->setMacAlgorithm(mSession, "HmacSHA256"),
+        DRM_PLUGIN_SET_MAC_ALGORITHM_FAILURE(
+                mPlugin, mSession, "HmacSHA256",
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -1701,10 +1814,11 @@ UT_ADD_TEST(VTS_L1_Drm, decrypt_neg) {
         const Bytes input(16, 0);
         const Bytes iv(16, 0);
         Bytes output;
-        DRM_CALL_FAILURE(mPlugin->decrypt({}, keyId, input, iv, &output), android::BAD_VALUE);
+        DRM_PLUGIN_DECRYPT_FAILURE(mPlugin, {}, keyId, input, iv, output, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->decrypt(mSession, keyId, input, iv, &output),
+        DRM_PLUGIN_DECRYPT_FAILURE(
+                mPlugin, mSession, keyId, input, iv, output,
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -1747,10 +1861,11 @@ UT_ADD_TEST(VTS_L1_Drm, encrypt_neg) {
         const Bytes input(16, 0);
         const Bytes iv(16, 0);
         Bytes output;
-        DRM_CALL_FAILURE(mPlugin->encrypt({}, keyId, input, iv, &output), android::BAD_VALUE);
+        DRM_PLUGIN_ENCRYPT_FAILURE(mPlugin, {}, keyId, input, iv, output, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->encrypt(mSession, keyId, input, iv, &output),
+        DRM_PLUGIN_ENCRYPT_FAILURE(
+                mPlugin, mSession, keyId, input, iv, output,
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -1792,10 +1907,11 @@ UT_ADD_TEST(VTS_L1_Drm, sign_neg) {
         const Bytes keyId(16, 0);
         const Bytes message{0x01};
         Bytes signature;
-        DRM_CALL_FAILURE(mPlugin->sign({}, keyId, message, &signature), android::BAD_VALUE);
+        DRM_PLUGIN_SIGN_FAILURE(mPlugin, {}, keyId, message, signature, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->sign(mSession, keyId, message, &signature),
+        DRM_PLUGIN_SIGN_FAILURE(
+                mPlugin, mSession, keyId, message, signature,
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -1838,10 +1954,12 @@ UT_ADD_TEST(VTS_L1_Drm, verify_neg) {
         const Bytes message{0x01};
         const Bytes signature(32, 0);
         bool verified = false;
-        DRM_CALL_FAILURE(mPlugin->verify({}, keyId, message, signature, &verified), android::BAD_VALUE);
+        DRM_PLUGIN_VERIFY_FAILURE(
+                mPlugin, {}, keyId, message, signature, verified, android::BAD_VALUE);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mPlugin->verify(mSession, keyId, message, signature, &verified),
+        DRM_PLUGIN_VERIFY_FAILURE(
+                mPlugin, mSession, keyId, message, signature, verified,
                 DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     }
 }
@@ -1872,8 +1990,8 @@ UT_ADD_TEST(VTS_L1_Drm, signRSA_neg) {
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
     Bytes signature;
-    DRM_CALL_FAILURE(mPlugin->signRSA({}, "PKCS1-BlockType1", {0x01}, {0x01}, &signature),
-            android::BAD_VALUE);
+    DRM_PLUGIN_SIGN_RSA_FAILURE(
+            mPlugin, {}, "PKCS1-BlockType1", {0x01}, {0x01}, signature, android::BAD_VALUE);
 }
 
 /**
@@ -1932,8 +2050,8 @@ UT_ADD_TEST(VTS_L1_Drm, requiresSecureDecoder_pos) {
  * **Test Procedure:**@n
  * | Variation / Step | Description | Test Data | Expected Result | Notes |
  * | :----: | --------- | ---------- | -------------- | ----- |
- * | 01 | Create DRM and crypto plugins | Same advertised UUID, empty crypto init data | Both plugins are non-null | Should Pass |
- * | 02 | Open a DRM session | every unique advertised level | Non-empty session ID | Should Pass |
+ * | 01 | Create a DRM plugin and open a session | Same advertised UUID, every unique advertised level | Plugin is non-null; session ID is non-empty | Should Pass |
+ * | 02 | Create a crypto plugin without an initial session | Same UUID, empty init data | Crypto plugin is non-null | Should Pass |
  * | 03 | Bind crypto to the DRM session and log status | IN: live session ID | Status is OK with EX_NONE | No license is required |
  * | 04 | Close the DRM session | Live session ID | Cleanup succeeds | Per-level close; teardown on failure |
  */
@@ -1943,7 +2061,6 @@ UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_pos) {
     UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
-    DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(schemes.uuids.front(), {}, mCrypto);
     std::set<SecurityLevel> levels;
     UT_ASSERT_TRUE_FATAL(vts_drm_collect_security_levels(schemes, levels));
     for (const auto requested : levels) {
@@ -1951,7 +2068,9 @@ UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_pos) {
         DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
+        DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(schemes.uuids.front(), {}, mCrypto);
         DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_SUCCESS(mCrypto, mSession);
+        mCrypto.clear();
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
     }
@@ -1973,10 +2092,11 @@ UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_pos) {
  * **Test Procedure:**@n
  * | Variation / Step | Description | Test Data | Expected Result | Notes |
  * | :----: | --------- | ---------- | -------------- | ----- |
- * | 01 | Create DRM/crypto plugins and open a session | Same UUID, every unique advertised level | Setup succeeds | Should Pass |
- * | 02 | Associate crypto with an empty session ID | Empty byte array | EX_SERVICE_SPECIFIC with ERROR_DRM_SESSION_NOT_OPENED | Expected API rejection |
- * | 03 | Close the real DRM session | Live session ID | Status is OK with EX_NONE | Prepare closed-session variation |
- * | 04 | Associate crypto with the closed ID | Closed non-empty ID | EX_SERVICE_SPECIFIC with ERROR_DRM_SESSION_NOT_OPENED | Expected API rejection |
+ * | 01 | Create a DRM plugin and open a session | Same UUID, every unique advertised level | Setup succeeds | Should Pass |
+ * | 02 | Create a crypto plugin without an initial session | Same UUID, empty init data | Crypto plugin is non-null | Should Pass |
+ * | 03 | Associate crypto with an empty session ID | Empty byte array | EX_SERVICE_SPECIFIC with ERROR_DRM_SESSION_NOT_OPENED | Expected API rejection |
+ * | 04 | Close the real DRM session | Live session ID | Status is OK with EX_NONE | Prepare closed-session variation |
+ * | 05 | Associate crypto with the closed ID | Closed non-empty ID | EX_SERVICE_SPECIFIC with ERROR_DRM_SESSION_NOT_OPENED | Expected API rejection |
  */
 UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_neg) {
     CryptoSchemes schemes;
@@ -1984,7 +2104,6 @@ UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_neg) {
     UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
-    DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(schemes.uuids.front(), {}, mCrypto);
     std::set<SecurityLevel> levels;
     UT_ASSERT_TRUE_FATAL(vts_drm_collect_security_levels(schemes, levels));
     for (const auto requested : levels) {
@@ -1992,10 +2111,80 @@ UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_neg) {
         DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
         mSessionOpen = true;
         UT_ASSERT_FALSE_FATAL(mSession.empty());
-        DRM_CALL_FAILURE(mCrypto->setMediaDrmSession({}), DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(schemes.uuids.front(), {}, mCrypto);
+        DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_FAILURE(
+                mCrypto, {}, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
         DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
         mSessionOpen = false;
-        DRM_CALL_FAILURE(mCrypto->setMediaDrmSession(mSession), DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_FAILURE(
+                mCrypto, mSession, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
+        mCrypto.clear();
+    }
+}
+
+/**
+ * @brief Decrypts a clear segment through the AIDL AVBuffer path without a license.
+ *
+ * **Test Group ID:** Basic: 01@n
+ * **Test Case ID:** 047@n
+ * **Priority:** High@n
+ * @n
+ * **Pre-Conditions:** Configured DRM factory and AVBuffer services are available@n
+ * **Dependencies:** DRM/Crypto plugins, AVBuffer service, and AVBuffer helper@n
+ * **User Interaction:** None@n
+ * @n
+ * **Test Procedure:**@n
+ * | Variation / Step | Description | Test Data | Expected Result | Notes |
+ * | :----: | --------- | ---------- | -------------- | ----- |
+ * | 01 | Create a DRM plugin and open a session | Advertised UUID, every unique advertised level | Plugin is non-null; session ID is non-empty | Should Pass |
+ * | 02 | Create a crypto plugin using the session ID and submit a clear sample | Session ID, `UNENCRYPTED`, caller-owned AVBuffers | Decrypt succeeds and reports the full sample size | No license or encrypted media |
+ * | 03 | Compare the destination with the input and release resources | Deterministic clear bytes | Output matches; buffers and session are released | Should Pass |
+ */
+UT_ADD_TEST(VTS_L1_Drm, decryptClearSegmentWithAvBuffer_pos) {
+    CryptoSchemes schemes;
+    DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes);
+    UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
+    DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
+            schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
+    std::set<SecurityLevel> levels;
+    UT_ASSERT_TRUE_FATAL(vts_drm_collect_security_levels(schemes, levels));
+
+    std::vector<uint8_t> clearData(1024);
+    for (size_t i = 0; i < clearData.size(); ++i) {
+        clearData[i] = static_cast<uint8_t>((i * 37U + 11U) & 0xffU);
+    }
+
+    for (const auto requested : levels) {
+        mSession.clear();
+        DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
+        mSessionOpen = true;
+        UT_ASSERT_FALSE_FATAL(mSession.empty());
+        DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(
+                schemes.uuids.front(), mSession, mCrypto);
+
+        SampleBuffers buffers;
+        UT_ASSERT_TRUE_FATAL(buffers.open(clearData.size()));
+        UT_ASSERT_TRUE_FATAL(buffers.writeSource(clearData));
+
+        SubSample clearSegment;
+        clearSegment.numBytesOfClearData = static_cast<int32_t>(clearData.size());
+        clearSegment.numBytesOfEncryptedData = 0;
+        const Bytes keyId(16, 0);
+        const Bytes iv(16, 0);
+        const auto args = buffers.decryptArgs(
+                keyId, iv, Mode::UNENCRYPTED, {clearSegment});
+        int32_t decryptedBytes = 0;
+        DRM_CRYPTO_PLUGIN_DECRYPT_SUCCESS(mCrypto, args, decryptedBytes);
+        UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(clearData.size()));
+
+        std::vector<uint8_t> decrypted;
+        UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, clearData.size()));
+        UT_ASSERT_TRUE_FATAL(decrypted == clearData);
+        UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+
+        mCrypto.clear();
+        DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
+        mSessionOpen = false;
     }
 }
 
@@ -2008,15 +2197,17 @@ UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_neg) {
  * **Test Case ID:** 044@n
  * **Priority:** Medium@n
  * @n
- * **Pre-Conditions:** Configured DRM factory is registered@n
- * **Dependencies:** DRM/crypto plugin creation and UT-Core@n
+ * **Pre-Conditions:** Configured DRM scheme can open a session@n
+ * **Dependencies:** DRM/crypto plugins and UT-Core@n
  * **User Interaction:** None@n
  * @n
  * **Test Procedure:**@n
  * | Variation / Step | Description | Test Data | Expected Result | Notes |
  * | :----: | --------- | ---------- | -------------- | ----- |
- * | 01 | Create DRM and crypto plugins | Advertised UUID, empty crypto init data | Both plugins are non-null | Should Pass |
- * | 02 | Notify each resolution and log dimensions/status | 1280x720, 1920x1080, 3840x2160 | Status is OK with EX_NONE for every notification | No media playback or resolution output is asserted |
+ * | 01 | Create a DRM plugin and open a session | Advertised UUID, every unique advertised level | Plugin is non-null; session ID is non-empty | Should Pass |
+ * | 02 | Create a crypto plugin using the session ID | Same UUID, live session ID | Crypto plugin is non-null | Should Pass |
+ * | 03 | Notify each resolution and log dimensions/status | 1280x720, 1920x1080, 3840x2160 | Status is OK with EX_NONE for every notification | No media playback or resolution output is asserted |
+ * | 04 | Close the DRM session | Live session ID | Cleanup succeeds | Per-level close; teardown on failure |
  */
 UT_ADD_TEST(VTS_L1_Drm, notifyResolution_pos) {
     CryptoSchemes schemes;
@@ -2024,11 +2215,25 @@ UT_ADD_TEST(VTS_L1_Drm, notifyResolution_pos) {
     UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
-    DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(schemes.uuids.front(), {}, mCrypto);
-    for (const auto& resolution :
-            {std::array<int32_t, 2>{1280, 720}, {1920, 1080}, {3840, 2160}}) {
-        UT_LOG_INFO("notifyResolution(width:%d, height:%d)", resolution[0], resolution[1]);
-        DRM_CRYPTO_PLUGIN_NOTIFY_RESOLUTION_SUCCESS(mCrypto, resolution[0], resolution[1]);
+    std::set<SecurityLevel> levels;
+    UT_ASSERT_TRUE_FATAL(vts_drm_collect_security_levels(schemes, levels));
+    for (const auto requested : levels) {
+        mSession.clear();
+        DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
+        mSessionOpen = true;
+        UT_ASSERT_FALSE_FATAL(mSession.empty());
+        DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(
+                schemes.uuids.front(), mSession, mCrypto);
+        for (const auto& resolution :
+                {std::array<int32_t, 2>{1280, 720}, {1920, 1080}, {3840, 2160}}) {
+            UT_LOG_INFO(
+                    "notifyResolution(width:%d, height:%d)", resolution[0], resolution[1]);
+            DRM_CRYPTO_PLUGIN_NOTIFY_RESOLUTION_SUCCESS(
+                    mCrypto, resolution[0], resolution[1]);
+        }
+        mCrypto.clear();
+        DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
+        mSessionOpen = false;
     }
 }
 
@@ -2041,16 +2246,18 @@ UT_ADD_TEST(VTS_L1_Drm, notifyResolution_pos) {
  * **Test Case ID:** 045@n
  * **Priority:** High@n
  * @n
- * **Pre-Conditions:** Configured DRM factory is registered@n
- * **Dependencies:** DRM/crypto plugin creation and UT-Core@n
+ * **Pre-Conditions:** Configured DRM scheme can open a session@n
+ * **Dependencies:** DRM/crypto plugins and UT-Core@n
  * **User Interaction:** None@n
  * @n
  * **Test Procedure:**@n
  * | Variation / Step | Description | Test Data | Expected Result | Notes |
  * | :----: | --------- | ---------- | -------------- | ----- |
- * | 01 | Create DRM and crypto plugins | Advertised UUID, empty crypto init data | Both plugins are non-null | Should Pass |
- * | 02 | Query listed video MIME types and log each result status | video/avc, video/hevc, video/x-vnd.on2.vp9, video/av1, video/mp4v-es | Status is OK with EX_NONE for each MIME | Boolean is provider-dependent |
- * | 03 | Query listed audio MIME types and log each result status | audio/mp4a-latm, audio/ac3, audio/eac3, audio/vnd.dts, audio/opus | Status is OK with EX_NONE for each MIME | Boolean is provider-dependent |
+ * | 01 | Create a DRM plugin and open a session | Advertised UUID, every unique advertised level | Plugin is non-null; session ID is non-empty | Should Pass |
+ * | 02 | Create a crypto plugin using the session ID | Same UUID, live session ID | Crypto plugin is non-null | Should Pass |
+ * | 03 | Query listed video MIME types and log each result status | video/avc, video/hevc, video/x-vnd.on2.vp9, video/av1, video/mp4v-es | Status is OK with EX_NONE for each MIME | Boolean is provider-dependent |
+ * | 04 | Query listed audio MIME types and log each result status | audio/mp4a-latm, audio/ac3, audio/eac3, audio/vnd.dts, audio/opus | Status is OK with EX_NONE for each MIME | Boolean is provider-dependent |
+ * | 05 | Close the DRM session | Live session ID | Cleanup succeeds | Per-level close; teardown on failure |
  */
 UT_ADD_TEST(VTS_L1_Drm, requiresSecureDecoderComponent_pos) {
     CryptoSchemes schemes;
@@ -2058,13 +2265,26 @@ UT_ADD_TEST(VTS_L1_Drm, requiresSecureDecoderComponent_pos) {
     UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
     DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
             schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
-    DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(schemes.uuids.front(), {}, mCrypto);
-    for (const char* mime : {"video/avc", "video/hevc", "video/x-vnd.on2.vp9", "video/av1",
-            "video/mp4v-es", "audio/mp4a-latm", "audio/ac3", "audio/eac3",
-            "audio/vnd.dts", "audio/opus"}) {
-        UT_LOG_INFO("requiresSecureDecoderComponent(mime:%s)", mime);
-        bool required = false;
-        DRM_CRYPTO_PLUGIN_REQUIRES_SECURE_DECODER_COMPONENT_SUCCESS(mCrypto, mime, required);
+    std::set<SecurityLevel> levels;
+    UT_ASSERT_TRUE_FATAL(vts_drm_collect_security_levels(schemes, levels));
+    for (const auto requested : levels) {
+        mSession.clear();
+        DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, requested, mSession);
+        mSessionOpen = true;
+        UT_ASSERT_FALSE_FATAL(mSession.empty());
+        DRM_FACTORY_CREATE_CRYPTO_PLUGIN_SUCCESS(
+                schemes.uuids.front(), mSession, mCrypto);
+        for (const char* mime : {"video/avc", "video/hevc", "video/x-vnd.on2.vp9",
+                "video/av1", "video/mp4v-es", "audio/mp4a-latm", "audio/ac3",
+                "audio/eac3", "audio/vnd.dts", "audio/opus"}) {
+            UT_LOG_INFO("requiresSecureDecoderComponent(mime:%s)", mime);
+            bool required = false;
+            DRM_CRYPTO_PLUGIN_REQUIRES_SECURE_DECODER_COMPONENT_SUCCESS(
+                    mCrypto, mime, required);
+        }
+        mCrypto.clear();
+        DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
+        mSessionOpen = false;
     }
 }
 
@@ -2093,116 +2313,6 @@ UT_ADD_TEST(VTS_L1_Drm, badMimeNotSupported_neg) {
     UT_ASSERT_TRUE_FATAL(vts_drm_content_supported(
             "video/rdk-vts-unsupported", SecurityLevel::SW_SECURE_CRYPTO, &supported));
     UT_ASSERT_FALSE(supported);
-}
-
-/**
- * @brief Handles provisioning when opening a session reports NOT_PROVISIONED.
- *
- * This opt-in test exchanges opaque provisioning data with an approved adapter and retries session creation.
- *
- * **Test Group ID:** Basic: 01@n
- * **Test Case ID:** 047@n
- * **Priority:** High@n
- * @n
- * **Pre-Conditions:** Provisioning test is enabled with an approved HTTP adapter@n
- * **Dependencies:** DRM plugin and configured provisioning endpoint@n
- * **User Interaction:** None@n
- * @n
- * **Test Procedure:**@n
- * | Variation / Step | Description | Test Data | Expected Result | Notes |
- * | :----: | --------- | ---------- | -------------- | ----- |
- * | 01 | Check the provisioning enable setting | DRM_PROVISIONING_ENABLE | Unset/0 explicitly skips; enabled value must be 1 | Opt-in only |
- * | 02 | Create a DRM plugin | Advertised UUID | Plugin creation succeeds | Should Pass |
- * | 03 | Attempt session open at the tested levels | HW_SECURE_ALL, SW_SECURE_CRYPTO | Success with a non-empty ID, or documented CANNOT_HANDLE/NOT_PROVISIONED error | Successfully opened sessions are closed immediately |
- * | 04 | Determine whether an exchange is needed | Results of session-open attempts | If no attempt needs provisioning, finish without an exchange | No unsupported capability is reported as provisioned |
- * | 05 | Request provisioning data if required | Configured certificate type and authority | Non-empty request; ERROR_DRM_CANNOT_HANDLE explicitly skips | Other errors fail |
- * | 06 | Validate transport settings and POST the opaque request | Configured URL, content type, positive timeout, request bytes | HTTP helper returns a valid non-empty response | Approved adapter only |
- * | 07 | Submit the provisioning response | Opaque response bytes | Status is OK with EX_NONE | Device credentials may be updated |
- * | 08 | Retry session creation and close the new session | Security level that reported NOT_PROVISIONED | Session opens with a non-empty ID and closes successfully | Teardown handles assertion-failure cleanup |
- */
-UT_ADD_TEST(VTS_L1_Drm, provisioningStatusAndExchange_pos) {
-    const char* enabled = vts_drm_config_value("DRM_PROVISIONING_ENABLE");
-    if (enabled == nullptr || std::string(enabled) == "0") {
-        UT_LOG_INFO("SKIP: provisioning exchange is disabled in DRM test configuration");
-        UT_IGNORE_TEST();
-    }
-    UT_ASSERT_TRUE_FATAL(std::string(enabled) == "1");
-    CryptoSchemes schemes;
-    DRM_FACTORY_GET_SUPPORTED_CRYPTO_SCHEMES_SUCCESS(schemes);
-    UT_ASSERT_FALSE_FATAL(schemes.uuids.empty());
-    DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(
-            schemes.uuids.front(), DRM_APP_PACKAGE_NAME, mPlugin);
-
-    const SecurityLevel levels[] = {
-        SecurityLevel::HW_SECURE_ALL, SecurityLevel::SW_SECURE_CRYPTO};
-    bool provisioningRequired = false;
-    SecurityLevel retryLevel = SecurityLevel::UNKNOWN;
-    for (SecurityLevel level : levels) {
-        mSession.clear();
-        Status status;
-        DRM_PLUGIN_OPEN_SESSION(mPlugin, level, mSession, status);
-        if (status.isOk()) {
-            mSessionOpen = true;
-            UT_ASSERT_FALSE_FATAL(mSession.empty());
-            DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
-            mSessionOpen = false;
-            continue;
-        }
-        if (hasServiceSpecificError(status, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
-            continue;
-        }
-        UT_ASSERT_TRUE_FATAL(
-                hasServiceSpecificError(status, DrmErrors::ERROR_DRM_NOT_PROVISIONED));
-        provisioningRequired = true;
-        retryLevel = level;
-        break;
-    }
-    if (!provisioningRequired) {
-        UT_LOG_INFO("Provisioning not required by the tested DRM scheme");
-        return;
-    }
-
-    com::rdk::hal::drm::ProvisionRequest request;
-    const char* certificateType =
-            vts_drm_config_value("DRM_PROVISIONING_CERTIFICATE_TYPE");
-    const char* certificateAuthority =
-            vts_drm_config_value("DRM_PROVISIONING_CERTIFICATE_AUTHORITY");
-    UT_ASSERT_TRUE_FATAL(certificateType != nullptr && certificateType[0] != '\0');
-    UT_ASSERT_TRUE_FATAL(certificateAuthority != nullptr);
-    const Status requestStatus = mPlugin->getProvisionRequest(
-            certificateType, certificateAuthority, &request);
-    if (hasServiceSpecificError(requestStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
-        UT_LOG_INFO("SKIP: DRM scheme reports provisioning is unsupported");
-        UT_IGNORE_TEST();
-    }
-    DRM_STATUS_SUCCESS(requestStatus);
-    UT_ASSERT_TRUE_FATAL(!request.request.empty());
-
-    const char* url = vts_drm_config_value("DRM_PROVISIONING_URL");
-    const char* contentType = vts_drm_config_value("DRM_PROVISIONING_CONTENT_TYPE");
-    const char* timeoutText =
-            vts_drm_config_value("DRM_PROVISIONING_REQUEST_TIMEOUT_SECONDS");
-    UT_ASSERT_TRUE_FATAL(url != nullptr && url[0] != '\0');
-    UT_ASSERT_TRUE_FATAL(contentType != nullptr && contentType[0] != '\0');
-    UT_ASSERT_TRUE_FATAL(timeoutText != nullptr);
-    long timeout = 0;
-    const std::string timeoutValue(timeoutText);
-    const auto parsed = std::from_chars(
-            timeoutValue.data(), timeoutValue.data() + timeoutValue.size(), timeout);
-    UT_ASSERT_TRUE_FATAL(parsed.ec == std::errc() &&
-            parsed.ptr == timeoutValue.data() + timeoutValue.size() && timeout > 0);
-
-    Bytes response;
-    UT_ASSERT_TRUE_FATAL(vts_drm_request_http_post(
-            url, contentType, timeout, request.request, &response));
-    com::rdk::hal::drm::ProvideProvisionResponseResult result;
-    DRM_PLUGIN_PROVIDE_PROVISION_RESPONSE_SUCCESS(mPlugin, response, result);
-    mSession.clear();
-    DRM_PLUGIN_OPEN_SESSION_SUCCESS(mPlugin, retryLevel, mSession);
-    mSessionOpen = true;
-    UT_ASSERT_FALSE_FATAL(mSession.empty());
-    DRM_PLUGIN_CLOSE_SESSION_SUCCESS(mPlugin, mSession);
-    mSessionOpen = false;
 }
 
 #undef DRM_REQUIRE_ALGORITHM

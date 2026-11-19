@@ -45,7 +45,7 @@
  * AVBuffer group.
  *
  * **Pre-Conditions:** Enable each scheme's L2 cases and provide scheme-specific fixtures@n
- * **Dependencies:** Selected DRM factory, provisioned device and test license inputs@n
+ * **Dependencies:** Selected DRM factory; test licenses or provisioning endpoint, as needed@n
  *
  * @endparblock
  */
@@ -69,10 +69,13 @@
 #include <com/rdk/hal/drm/KeyStatusType.h>
 #include <com/rdk/hal/drm/KeyType.h>
 #include <com/rdk/hal/drm/Mode.h>
+#include <com/rdk/hal/drm/ProvideProvisionResponseResult.h>
+#include <com/rdk/hal/drm/ProvisionRequest.h>
 #include <com/rdk/hal/drm/SubSample.h>
 #include <utils/Errors.h>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cerrno>
@@ -510,6 +513,7 @@ public:
     void fixtureValidation_pos();
     void keyRequestAndResponse_pos();
     void offlineKeySetCreated_pos();
+    void provisioningStatusAndExchange_pos();
     void listenerCallbacks_pos();
     void getKeyRequestResourceContention_neg();
     void getKeyRequestInvalidStateAndSessionLost_neg();
@@ -1418,6 +1422,120 @@ void L2Cases::closedSessionRejectsOperations_neg() {
             status, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
 }
 
+/**
+ * @brief Handles provisioning when opening a session reports NOT_PROVISIONED.
+ *
+ * This opt-in test exchanges opaque provisioning data with an approved adapter
+ * for the selected L2 scheme and retries session creation.
+ *
+ * **Test Group ID:** L2: 02@n
+ * **Test Case ID:** 021@n
+ * **Priority:** High@n
+ * @n
+ * **Pre-Conditions:** L2 enabled and provisioning status test enabled@n
+ * **Dependencies:** Selected DRM plugin; configured endpoint if an exchange is required@n
+ * **User Interaction:** None@n
+ * @n
+ * **Test Procedure:**@n
+ * | Variation / Step | Description | Test Data | Expected Result | Notes |
+ * | :----: | --------- | ---------- | -------------- | ----- |
+ * | 01 | Check the provisioning enable setting | DRM_PROVISIONING_ENABLE | Unset/0 explicitly skips; enabled value must be 1 | Opt-in only |
+ * | 02 | Create a DRM plugin for the selected L2 scheme | Configured UUID | Plugin creation succeeds | Should Pass |
+ * | 03 | Attempt session open at the tested levels | HW_SECURE_ALL, SW_SECURE_CRYPTO | Success with a non-empty ID, or documented CANNOT_HANDLE/NOT_PROVISIONED error | Successfully opened sessions are closed immediately |
+ * | 04 | Determine whether an exchange is needed | Results of session-open attempts | If no attempt needs provisioning, finish without an exchange | No unsupported capability is reported as provisioned |
+ * | 05 | Request provisioning data if required | Configured certificate type and authority | Non-empty request; ERROR_DRM_CANNOT_HANDLE explicitly skips | Other errors fail |
+ * | 06 | Validate transport settings and POST the opaque request | Configured URL, content type, positive timeout, request bytes | HTTP helper returns a valid non-empty response | Approved adapter only |
+ * | 07 | Submit the provisioning response | Opaque response bytes | Status is OK with EX_NONE | Device credentials may be updated |
+ * | 08 | Retry session creation and close the new session | Security level that reported NOT_PROVISIONED | Session opens with a non-empty ID and closes successfully | Destructor closes session on assertion failure |
+ */
+void L2Cases::provisioningStatusAndExchange_pos() {
+    const char* enabled = vts_drm_config_value("DRM_PROVISIONING_ENABLE");
+    if (enabled == nullptr || std::string(enabled) == "0") {
+        UT_LOG_INFO("SKIP: provisioning exchange is disabled in DRM test configuration");
+        UT_IGNORE_TEST();
+    }
+    UT_ASSERT_TRUE_FATAL(std::string(enabled) == "1");
+
+    Uuid uuid;
+    UT_ASSERT_TRUE_FATAL(vts_drm_getSupportedUuid(&uuid).isOk());
+    LicensedSession licensed;
+    DRM_FACTORY_CREATE_DRM_PLUGIN_SUCCESS(uuid, DRM_APP_PACKAGE_NAME, licensed.drm);
+
+    const com::rdk::hal::drm::SecurityLevel levels[] = {
+        com::rdk::hal::drm::SecurityLevel::HW_SECURE_ALL,
+        com::rdk::hal::drm::SecurityLevel::SW_SECURE_CRYPTO};
+    bool provisioningRequired = false;
+    com::rdk::hal::drm::SecurityLevel retryLevel =
+            com::rdk::hal::drm::SecurityLevel::UNKNOWN;
+    for (const auto level : levels) {
+        licensed.session.clear();
+        Status status;
+        DRM_PLUGIN_OPEN_SESSION(licensed.drm, level, licensed.session, status);
+        if (status.isOk()) {
+            UT_ASSERT_FALSE_FATAL(licensed.session.empty());
+            UT_ASSERT_TRUE_FATAL(licensed.close());
+            continue;
+        }
+        licensed.session.clear();
+        if (hasServiceSpecificError(status, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
+            continue;
+        }
+        UT_ASSERT_TRUE_FATAL(
+                hasServiceSpecificError(status, DrmErrors::ERROR_DRM_NOT_PROVISIONED));
+        provisioningRequired = true;
+        retryLevel = level;
+        break;
+    }
+    if (!provisioningRequired) {
+        UT_LOG_INFO("Provisioning not required by the selected DRM scheme");
+        return;
+    }
+
+    com::rdk::hal::drm::ProvisionRequest request;
+    const char* certificateType =
+            vts_drm_config_value("DRM_PROVISIONING_CERTIFICATE_TYPE");
+    const char* certificateAuthority =
+            vts_drm_config_value("DRM_PROVISIONING_CERTIFICATE_AUTHORITY");
+    UT_ASSERT_TRUE_FATAL(certificateType != nullptr && certificateType[0] != '\0');
+    UT_ASSERT_TRUE_FATAL(certificateAuthority != nullptr);
+    Status requestStatus;
+    DRM_PLUGIN_GET_PROVISION_REQUEST(
+            licensed.drm, certificateType, certificateAuthority, request, requestStatus);
+    if (hasServiceSpecificError(requestStatus, DrmErrors::ERROR_DRM_CANNOT_HANDLE)) {
+        UT_LOG_INFO("SKIP: DRM scheme reports provisioning is unsupported");
+        UT_IGNORE_TEST();
+    }
+    DRM_STATUS_SUCCESS(requestStatus);
+    UT_ASSERT_TRUE_FATAL(!request.request.empty());
+
+    const char* url = vts_drm_config_value("DRM_PROVISIONING_URL");
+    const char* contentType = vts_drm_config_value("DRM_PROVISIONING_CONTENT_TYPE");
+    const char* timeoutText =
+            vts_drm_config_value("DRM_PROVISIONING_REQUEST_TIMEOUT_SECONDS");
+    UT_ASSERT_TRUE_FATAL(url != nullptr && url[0] != '\0');
+    UT_ASSERT_TRUE_FATAL(contentType != nullptr && contentType[0] != '\0');
+    UT_ASSERT_TRUE_FATAL(timeoutText != nullptr);
+    long timeout = 0;
+    const std::string timeoutValue(timeoutText);
+    const auto parsed = std::from_chars(
+            timeoutValue.data(), timeoutValue.data() + timeoutValue.size(), timeout);
+    UT_ASSERT_TRUE_FATAL(parsed.ec == std::errc() &&
+            parsed.ptr == timeoutValue.data() + timeoutValue.size() && timeout > 0);
+
+    std::vector<uint8_t> response;
+    UT_ASSERT_TRUE_FATAL(vts_drm_request_http_post(
+            url, contentType, timeout, request.request, &response));
+    com::rdk::hal::drm::ProvideProvisionResponseResult result;
+    DRM_PLUGIN_PROVIDE_PROVISION_RESPONSE_SUCCESS(licensed.drm, response, result);
+
+    licensed.session.clear();
+    Status retryStatus;
+    DRM_PLUGIN_OPEN_SESSION(licensed.drm, retryLevel, licensed.session, retryStatus);
+    DRM_STATUS_SUCCESS(retryStatus);
+    UT_ASSERT_FALSE_FATAL(licensed.session.empty());
+    UT_ASSERT_TRUE_FATAL(licensed.close());
+}
+
 #define DRM_L2_SCHEME(Suite, Scheme) \
     class Suite : public L2Cases { \
     public: Suite() : L2Cases(Scheme) {} \
@@ -1426,6 +1544,9 @@ void L2Cases::closedSessionRejectsOperations_neg() {
     UT_ADD_TEST(Suite, fixtureValidation_pos) { L2Cases::fixtureValidation_pos(); } \
     UT_ADD_TEST(Suite, keyRequestAndResponse_pos) { L2Cases::keyRequestAndResponse_pos(); } \
     UT_ADD_TEST(Suite, offlineKeySetCreated_pos) { L2Cases::offlineKeySetCreated_pos(); } \
+    UT_ADD_TEST(Suite, provisioningStatusAndExchange_pos) { \
+        L2Cases::provisioningStatusAndExchange_pos(); \
+    } \
     UT_ADD_TEST(Suite, decryptClearSegmentWithAvBuffer_pos) { \
         L2Cases::decryptClearSegmentWithAvBuffer_pos(); \
     } \
