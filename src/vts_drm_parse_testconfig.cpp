@@ -43,9 +43,6 @@ const ConfigField fields[] = {
     {"DRM_L2_LICENSE_CONTENT_TYPE", "drm.l2.license.content_type", "application/json"},
     {"DRM_L2_CIPHERTEXT", "drm.l2.content.encrypted_sample_file", ""},
     {"DRM_L2_PLAINTEXT", "drm.l2.content.expected_plaintext_file", ""},
-    {"DRM_L2_MODE", "drm.l2.content.mode", "AES_CTR"},
-    {"DRM_L2_PATTERN_ENCRYPT_BLOCKS", "drm.l2.content.pattern.encrypt_blocks", "0"},
-    {"DRM_L2_PATTERN_SKIP_BLOCKS", "drm.l2.content.pattern.skip_blocks", "0"},
     {"DRM_L2_OFFLINE_LICENSE_RESPONSE", "drm.l2.content.offline_license_response_file", ""},
     {"DRM_L2_KID_HEX", "drm.l2.content.kid_hex", ""},
     {"DRM_L2_KEY_HEX", "drm.l2.content.key_hex", ""},
@@ -66,6 +63,8 @@ const ConfigField fields[] = {
     {"DRM_L3_MIME_TYPE", "drm.l3.sample.mime_type", ""},
     {"DRM_L3_CODEC_MIME_TYPE", "drm.l3.sample.codec_mime_type", ""},
     {"DRM_L3_MODE", "drm.l3.sample.mode", "AES_CTR"},
+    {"DRM_L3_PATTERN_ENCRYPT_BLOCKS", "drm.l3.sample.pattern.encrypt_blocks", "0"},
+    {"DRM_L3_PATTERN_SKIP_BLOCKS", "drm.l3.sample.pattern.skip_blocks", "0"},
     {"DRM_L3_SECURE_SESSION_ENABLE", "drm.l3.secure_session.enabled", "0", true},
     {"DRM_L3_REQUIRED_SECURITY_LEVEL", "drm.l3.secure_session.required_security_level", ""}
 };

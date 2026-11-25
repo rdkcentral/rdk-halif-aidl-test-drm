@@ -301,8 +301,8 @@ text without an added newline; `cipher.bin` contains binary ciphertext.
 
 This demonstration uses OpenSSL, not the ClearKey service. Run
 `VTS_L2_DrmClearKey.decryptKnownSample_pos` to verify the service's legacy
-decryption, or `VTS_L2_DrmClearKey.decryptKnownSampleWithAvBuffer_pos` for
-the AVBuffer path; both compare the decrypted output with `plain.bin`.
+decryption, or `VTS_L3_Drm.decryptSampleWithAvBuffer_pos` for the AIDL AVBuffer
+path; both compare the decrypted output with `plain.bin`.
 
 ```sh
 tools/make_clearkey_fixtures.py /tmp/clearkey_fixtures

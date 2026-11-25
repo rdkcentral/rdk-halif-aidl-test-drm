@@ -43,8 +43,8 @@
  * admission. They do not claim end-to-end playback or protected-output
  * validation.
  *
- * **Pre-Conditions:** Enable L3 through YAML or environment and provide the documented sample
- * and license fixtures@n
+ * **Pre-Conditions:** Enable L3 through YAML or environment and provide
+ * fixtures required by the selected cases@n
  * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
  *
  * @endparblock
@@ -69,8 +69,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <climits>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -96,16 +99,62 @@ struct SampleFixture {
     std::vector<uint8_t> plaintext;
     std::vector<uint8_t> keyId;
     std::vector<uint8_t> iv;
-    std::vector<uint8_t> licenseResponse;
     std::string mimeType;
     Mode mode = Mode::AES_CTR;
+    int32_t patternEncryptBlocks = 0;
+    int32_t patternSkipBlocks = 0;
 };
+
+void logSamplePreview(const char* label, const std::vector<uint8_t>& data) {
+    constexpr char digits[] = "0123456789abcdef";
+    const size_t previewSize = std::min(data.size(), size_t{64});
+    std::string hex;
+    std::string text;
+    for (size_t i = 0; i < previewSize; ++i) {
+        const uint8_t byte = data[i];
+        hex += digits[byte >> 4];
+        hex += digits[byte & 0x0f];
+        if (byte == '"' || byte == '\\') {
+            text += '\\';
+        }
+        text += byte >= 0x20 && byte <= 0x7e ? static_cast<char>(byte) : '.';
+    }
+    UT_LOG_INFO("VTS client %s: %zu bytes, preview %zu bytes%s, hex=%s, ASCII=\"%s\"",
+            label, data.size(), previewSize, previewSize < data.size() ? " (truncated)" : "",
+            hex.c_str(), text.c_str());
+}
 
 DecryptArgs sampleDecryptArgs(const SampleFixture& fixture, const SampleBuffers& buffers) {
     SubSample sample;
     sample.numBytesOfClearData = 0;
     sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
-    return buffers.decryptArgs(fixture.keyId, fixture.iv, fixture.mode, {sample});
+    return buffers.decryptArgs(
+            fixture.keyId, fixture.iv, fixture.mode, {sample},
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+}
+
+bool parseNonNegativeInt32(const char* variable, int32_t* output) {
+    const char* value = vts_drm_config_value(variable);
+    if (value == nullptr || value[0] == '\0') {
+        UT_LOG_ERROR("%s must be a non-negative integer", variable);
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (errno == ERANGE || end == value || *end != '\0' || parsed < 0 ||
+            parsed > INT32_MAX) {
+        UT_LOG_ERROR("%s must be a non-negative 32-bit integer", variable);
+        return false;
+    }
+    *output = static_cast<int32_t>(parsed);
+    return true;
+}
+
+bool hasServiceSpecificError(const Status& status, DrmErrors error) {
+    return !status.isOk() &&
+            status.exceptionCode() == Status::EX_SERVICE_SPECIFIC &&
+            status.serviceSpecificErrorCode() == static_cast<int32_t>(error);
 }
 
 bool enabled() {
@@ -195,13 +244,6 @@ bool loadFixture(SampleFixture* fixture) {
         UT_LOG_ERROR("DRM_L3_MIME_TYPE is not set");
         return false;
     }
-    bool useHttp = false;
-    if (!vts_drm_license_uses_http("L3", &useHttp)) {
-        return false;
-    }
-    if (!useHttp && !readFile("DRM_L3_LICENSE_RESPONSE", &fixture->licenseResponse)) {
-        return false;
-    }
     fixture->mimeType = mimeType;
 
     if (!readFile("DRM_L3_INIT_DATA", &fixture->initData) ||
@@ -209,7 +251,11 @@ bool loadFixture(SampleFixture* fixture) {
             !readFile("DRM_L3_EXPECTED_PLAINTEXT", &fixture->plaintext) ||
             !decodeHex("DRM_L3_KID_HEX", &fixture->keyId) ||
             !decodeHex("DRM_L3_IV_HEX", &fixture->iv) ||
-            !parseMode(vts_drm_config_value("DRM_L3_MODE"), &fixture->mode)) {
+            !parseMode(vts_drm_config_value("DRM_L3_MODE"), &fixture->mode) ||
+            !parseNonNegativeInt32(
+                    "DRM_L3_PATTERN_ENCRYPT_BLOCKS", &fixture->patternEncryptBlocks) ||
+            !parseNonNegativeInt32(
+                    "DRM_L3_PATTERN_SKIP_BLOCKS", &fixture->patternSkipBlocks)) {
         return false;
     }
 
@@ -272,8 +318,12 @@ public:
         if (!vts_drm_license_uses_http("L3", &useHttp)) {
             return false;
         }
-        std::vector<uint8_t> response = fixture.licenseResponse;
-        if (useHttp && !vts_drm_request_http_license("L3", request.request, &response)) {
+        std::vector<uint8_t> response;
+        if (useHttp) {
+            if (!vts_drm_request_http_license("L3", request.request, &response)) {
+                return false;
+            }
+        } else if (!readFile("DRM_L3_LICENSE_RESPONSE", &response)) {
             return false;
         }
         status = drm->provideKeyResponse(session, response, &keySetId);
@@ -416,6 +466,10 @@ public:
     void decryptSampleWithAvBuffer_pos();
     void removedKeysAndClosedSessionRejectDecrypt_neg();
     void secureSessionAndDecoderRequirement_pos();
+    void decryptSubsamplesAndPattern_pos();
+    void decryptBoundsAndInvalidInputsRejected_neg();
+    void decryptClearSegmentWithAvBuffer_pos();
+    void decryptWithoutKeysRejected_neg();
 };
 
 /**
@@ -431,8 +485,8 @@ public:
  * |Variation / Step|Description|Test Data|Expected Result|Notes|
  * |----------------|-----------|---------|---------------|-----|
  * |01|Acquire a streaming key and bind the DRM session|Init data and license response|Key response is accepted and session is bound|Should Pass|
- * |02|Decrypt the sample using source and destination AVBuffers|KID, IV, mode, subsample|AIDL decrypt succeeds and reports the sample byte count|Should Pass|
- * |03|Compare output with the independent plaintext fixture|Decrypted and expected bytes|All bytes match exactly|Does not validate decoder playback|
+ * |02|Decrypt the sample using source and destination AVBuffers|KID, IV, mode, pattern, subsample|AIDL decrypt succeeds and reports the sample byte count|Should Pass|
+ * |03|Compare output and confirm the source buffer remains readable|Decrypted, expected, and source bytes|Plaintext matches and source is unchanged|Does not validate decoder playback|
  * |04|Release DRM and AVBuffer resources|Session and allocated handles|All resources are released|Should Pass|
  */
 void L3Cases::decryptSampleWithAvBuffer_pos() {
@@ -459,6 +513,8 @@ void L3Cases::decryptSampleWithAvBuffer_pos() {
     SampleBuffers buffers;
     UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
     UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
+    logSamplePreview("expected plaintext fixture", fixture.plaintext);
+    logSamplePreview("encrypted sample before ICryptoPlugin::decrypt", fixture.ciphertext);
 
     int32_t decryptedBytes = 0;
     DRM_CRYPTO_PLUGIN_DECRYPT_SUCCESS(
@@ -467,7 +523,11 @@ void L3Cases::decryptSampleWithAvBuffer_pos() {
 
     std::vector<uint8_t> decrypted;
     UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+    logSamplePreview("returned plaintext after ICryptoPlugin::decrypt", decrypted);
     UT_ASSERT_TRUE(decrypted == fixture.plaintext);
+    std::vector<uint8_t> retainedSource;
+    UT_ASSERT_TRUE_FATAL(buffers.readSource(&retainedSource, fixture.ciphertext.size()));
+    UT_ASSERT_TRUE(retainedSource == fixture.ciphertext);
     UT_ASSERT_TRUE(buffers.cleanup());
     UT_ASSERT_TRUE(licensed.close());
 }
@@ -596,6 +656,308 @@ void L3Cases::secureSessionAndDecoderRequirement_pos() {
     UT_ASSERT_TRUE(session.close());
 }
 
+/**
+ * @brief Checks AIDL decrypt handling of multiple subsamples and configured patterns.
+ *
+ * **Test Group ID:** L3: 03@n
+ * **Test Case ID:** 004@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L3 enabled with a known sample and accepted license@n
+ * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Decrypt as adjacent encrypted subsamples or with the configured pattern|L3 sample mode, pattern, KID, IV, and AVBuffers|Output matches the plaintext fixture|Should Pass|
+ * |02|For unpatterned AES-CTR, retry with an encrypted prefix and clear tail|Mixed subsamples and plaintext tail|Output still matches the plaintext fixture|Should Pass|
+ */
+void L3Cases::decryptSubsamplesAndPattern_pos() {
+    if (!enabled()) {
+        return;
+    }
+    bool protectedOutput = false;
+    UT_ASSERT_TRUE_FATAL(probeProtectedOutput(&protectedOutput));
+    if (protectedOutput) {
+        UT_LOG_INFO("SKIP: secure decoder required; CPU-readable plaintext comparison is not applicable");
+        UT_IGNORE_TEST();
+    }
+
+    SampleFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    UT_ASSERT_TRUE_FATAL(requiresProtectedOutput(licensed, &protectedOutput));
+    if (protectedOutput) {
+        UT_ASSERT_TRUE_FATAL(licensed.close());
+        UT_LOG_INFO("SKIP: secure decoder required; CPU-readable plaintext comparison is not applicable");
+        UT_IGNORE_TEST();
+    }
+
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+    std::vector<uint8_t> source = fixture.ciphertext;
+    std::vector<SubSample> subSamples;
+    if (fixture.mode == Mode::AES_CTR && fixture.patternEncryptBlocks == 0 &&
+            fixture.patternSkipBlocks == 0 && source.size() > 1) {
+        const size_t split = source.size() / 2;
+        SubSample first;
+        first.numBytesOfClearData = 0;
+        first.numBytesOfEncryptedData = static_cast<int32_t>(split);
+        SubSample second;
+        second.numBytesOfClearData = 0;
+        second.numBytesOfEncryptedData = static_cast<int32_t>(source.size() - split);
+        subSamples = {first, second};
+    } else {
+        SubSample sample;
+        sample.numBytesOfClearData = 0;
+        sample.numBytesOfEncryptedData = static_cast<int32_t>(source.size());
+        subSamples = {sample};
+    }
+
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(source));
+    DecryptArgs args = buffers.decryptArgs(
+            fixture.keyId, fixture.iv, fixture.mode, subSamples,
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    DRM_STATUS_SUCCESS(licensed.crypto->decrypt(args, &decryptedBytes));
+    UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
+    std::vector<uint8_t> decrypted;
+    UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+    UT_ASSERT_TRUE_FATAL(decrypted == fixture.plaintext);
+
+    if (fixture.mode == Mode::AES_CTR && fixture.patternEncryptBlocks == 0 &&
+            fixture.patternSkipBlocks == 0 && source.size() > 1) {
+        const size_t clearSize = std::max<size_t>(1, source.size() / 4);
+        const size_t encryptedSize = source.size() - clearSize;
+        std::copy(
+                fixture.plaintext.begin() + encryptedSize,
+                fixture.plaintext.end(),
+                source.begin() + encryptedSize);
+        SubSample encrypted;
+        encrypted.numBytesOfClearData = 0;
+        encrypted.numBytesOfEncryptedData = static_cast<int32_t>(encryptedSize);
+        SubSample clear;
+        clear.numBytesOfClearData = static_cast<int32_t>(clearSize);
+        clear.numBytesOfEncryptedData = 0;
+        UT_ASSERT_TRUE_FATAL(buffers.writeSource(source));
+        args = buffers.decryptArgs(
+                fixture.keyId, fixture.iv, fixture.mode, {encrypted, clear});
+        DRM_STATUS_SUCCESS(licensed.crypto->decrypt(args, &decryptedBytes));
+        UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
+        UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+        UT_ASSERT_TRUE(decrypted == fixture.plaintext);
+    }
+
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Checks documented AIDL errors for buffer bounds and invalid inputs.
+ *
+ * **Test Group ID:** L3: 03@n
+ * **Test Case ID:** 005@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L3 enabled with a known sample and accepted license@n
+ * **Dependencies:** DRM, AVBuffer, and AVBufferHelper services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Decrypt into an undersized destination buffer|Valid sample and destination one byte too small|Returns ERROR_DRM_FRAME_TOO_LARGE|Documented error|
+ * |02|Describe more source bytes than the AVBuffer contains|Full-sample subsample and short source buffer|Returns ERROR_DRM_DECRYPT|Documented error|
+ * |03|Retry with no subsamples or an invalid handle|Empty subsample array or unallocated handle|Returns ERROR_DRM_ZERO_SUBSAMPLES or ERROR_DRM_DECRYPT|Documented errors|
+ */
+void L3Cases::decryptBoundsAndInvalidInputsRejected_neg() {
+    if (!enabled()) {
+        return;
+    }
+    bool protectedOutput = false;
+    UT_ASSERT_TRUE_FATAL(probeProtectedOutput(&protectedOutput));
+    if (protectedOutput) {
+        UT_LOG_INFO("SKIP: secure decoder required; non-secure AVBuffer negative tests are not applicable");
+        UT_IGNORE_TEST();
+    }
+
+    SampleFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+    UT_ASSERT_TRUE_FATAL(fixture.plaintext.size() > 1);
+    LicensedSession licensed;
+    UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
+    UT_ASSERT_TRUE_FATAL(requiresProtectedOutput(licensed, &protectedOutput));
+    if (protectedOutput) {
+        UT_ASSERT_TRUE_FATAL(licensed.close());
+        UT_LOG_INFO("SKIP: secure decoder required; non-secure AVBuffer negative tests are not applicable");
+        UT_IGNORE_TEST();
+    }
+
+    SubSample sample;
+    sample.numBytesOfClearData = 0;
+    sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
+    {
+        SampleBuffers buffers;
+        UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+        UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
+        DecryptArgs args = buffers.decryptArgs(
+                fixture.keyId, fixture.iv, fixture.mode, {sample},
+                fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+        int32_t decryptedBytes = 0;
+        args.subSamples.clear();
+        DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+                licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_ZERO_SUBSAMPLES);
+
+        args.subSamples = {sample};
+        args.sourceBufferHandle = -1;
+        DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+                licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_DECRYPT);
+
+        args.sourceBufferHandle = buffers.sourceHandle();
+        args.destinationBufferHandle = -1;
+        DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+                licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_DECRYPT);
+        UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    }
+
+    {
+        SampleBuffers smallDestination;
+        UT_ASSERT_TRUE_FATAL(smallDestination.open(
+                fixture.ciphertext.size(), fixture.plaintext.size() - 1));
+        UT_ASSERT_TRUE_FATAL(smallDestination.writeSource(fixture.ciphertext));
+        const DecryptArgs args = smallDestination.decryptArgs(
+                fixture.keyId, fixture.iv, fixture.mode, {sample},
+                fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+        int32_t decryptedBytes = 0;
+        const Status status = licensed.crypto->decrypt(args, &decryptedBytes);
+        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
+                status, DrmErrors::ERROR_DRM_FRAME_TOO_LARGE));
+        UT_ASSERT_TRUE_FATAL(smallDestination.cleanup());
+    }
+
+    SampleBuffers shortSource;
+    UT_ASSERT_TRUE_FATAL(shortSource.open(
+            fixture.ciphertext.size() - 1, fixture.plaintext.size()));
+    UT_ASSERT_TRUE_FATAL(shortSource.writeSource(
+            std::vector<uint8_t>(fixture.ciphertext.begin(), fixture.ciphertext.end() - 1)));
+    const DecryptArgs outOfBoundsArgs = shortSource.decryptArgs(
+            fixture.keyId, fixture.iv, fixture.mode, {sample},
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+            licensed.crypto, outOfBoundsArgs, decryptedBytes, DrmErrors::ERROR_DRM_DECRYPT);
+    UT_ASSERT_TRUE_FATAL(shortSource.cleanup());
+    UT_ASSERT_TRUE(licensed.close());
+}
+
+/**
+ * @brief Checks AIDL AVBuffer pass-through for a clear-only segment.
+ *
+ * **Test Group ID:** L3: 03@n
+ * **Test Case ID:** 006@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L3 enabled and AVBuffer services available@n
+ * **Dependencies:** DRM and Crypto plugins@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Submit a clear-only sample using UNENCRYPTED mode|Caller-owned source/destination AVBuffers|AIDL succeeds and reports the full sample size|No license or decoder|
+ * |02|Compare destination bytes and clean up handles|Deterministic clear bytes|Output matches input; caller frees both handles|Pass-through only, no crypto transform|
+ */
+void L3Cases::decryptClearSegmentWithAvBuffer_pos() {
+    if (!enabled()) {
+        return;
+    }
+    Uuid uuid;
+    UT_ASSERT_TRUE_FATAL(vts_drm_getSupportedUuid(&uuid).isOk());
+    sp<IDrmPlugin> drm;
+    sp<ICryptoPlugin> crypto;
+    UT_ASSERT_TRUE_FATAL(vts_drm_createPlugins(uuid, &drm, &crypto).isOk());
+    UT_ASSERT_TRUE_FATAL(drm != nullptr && crypto != nullptr);
+
+    SecurityLevel level;
+    UT_ASSERT_TRUE_FATAL(vts_drm_parse_security_level(
+            vts_drm_config_value("DRM_L3_SECURITY_LEVEL"), &level));
+    OpenDrmSession session;
+    UT_ASSERT_TRUE_FATAL(session.open(drm, level));
+    DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_SUCCESS(crypto, session.id());
+
+    std::vector<uint8_t> clearData(1024);
+    for (size_t i = 0; i < clearData.size(); ++i) {
+        clearData[i] = static_cast<uint8_t>((i * 37U + 11U) & 0xffU);
+    }
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(clearData.size()));
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(clearData));
+
+    SubSample clearSegment;
+    clearSegment.numBytesOfClearData = static_cast<int32_t>(clearData.size());
+    clearSegment.numBytesOfEncryptedData = 0;
+    const std::vector<uint8_t> keyId(16, 0);
+    const std::vector<uint8_t> iv(16, 0);
+    const DecryptArgs args = buffers.decryptArgs(
+            keyId, iv, Mode::UNENCRYPTED, {clearSegment});
+    int32_t decryptedBytes = 0;
+    DRM_CRYPTO_PLUGIN_DECRYPT_SUCCESS(crypto, args, decryptedBytes);
+    UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(clearData.size()));
+
+    std::vector<uint8_t> decrypted;
+    UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, clearData.size()));
+    UT_ASSERT_TRUE_FATAL(decrypted == clearData);
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    UT_ASSERT_TRUE(session.close());
+}
+
+/**
+ * @brief Rejects encrypted AVBuffer decryption when the L3 session has no keys.
+ *
+ * **Test Group ID:** L3: 03@n
+ * **Test Case ID:** 007@n
+ * **Priority:** High@n
+ * **Pre-Conditions:** L3 enabled with a configured encrypted sample@n
+ * **Dependencies:** DRM, Crypto and AVBuffer services@n
+ * **User Interaction:** None@n
+ * **Test Procedure:**@n
+ * |Variation / Step|Description|Test Data|Expected Result|Notes|
+ * |----------------|-----------|---------|---------------|-----|
+ * |01|Open and bind a session without requesting or providing a key|Configured encrypted sample|Session setup succeeds without a license|Should Pass|
+ * |02|Attempt AIDL decryption|KID, IV, ciphertext and AVBuffer handles|Returns ERROR_DRM_NO_LICENSE|Documented error|
+ */
+void L3Cases::decryptWithoutKeysRejected_neg() {
+    if (!enabled()) {
+        return;
+    }
+    SampleFixture fixture;
+    UT_ASSERT_TRUE_FATAL(loadFixture(&fixture));
+
+    Uuid uuid;
+    UT_ASSERT_TRUE_FATAL(vts_drm_getSupportedUuid(&uuid).isOk());
+    sp<IDrmPlugin> drm;
+    sp<ICryptoPlugin> crypto;
+    UT_ASSERT_TRUE_FATAL(vts_drm_createPlugins(uuid, &drm, &crypto).isOk());
+    UT_ASSERT_TRUE_FATAL(drm != nullptr && crypto != nullptr);
+    SecurityLevel level;
+    UT_ASSERT_TRUE_FATAL(vts_drm_parse_security_level(
+            vts_drm_config_value("DRM_L3_SECURITY_LEVEL"), &level));
+    OpenDrmSession session;
+    UT_ASSERT_TRUE_FATAL(session.open(drm, level));
+    DRM_CRYPTO_PLUGIN_SET_MEDIA_DRM_SESSION_SUCCESS(crypto, session.id());
+
+    SampleBuffers buffers;
+    UT_ASSERT_TRUE_FATAL(buffers.open(fixture.ciphertext.size()));
+    UT_ASSERT_TRUE_FATAL(buffers.writeSource(fixture.ciphertext));
+    SubSample sample;
+    sample.numBytesOfClearData = 0;
+    sample.numBytesOfEncryptedData = static_cast<int32_t>(fixture.ciphertext.size());
+    const DecryptArgs args = buffers.decryptArgs(
+            fixture.keyId, fixture.iv, fixture.mode, {sample},
+            fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    int32_t decryptedBytes = 0;
+    DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+            crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_NO_LICENSE);
+    UT_ASSERT_TRUE_FATAL(buffers.cleanup());
+    UT_ASSERT_TRUE(session.close());
+}
+
 #define DRM_L3_SCHEME(Suite, Scheme) \
     class Suite : public L3Cases { \
     public: Suite() : L3Cases(Scheme) {} \
@@ -607,6 +969,18 @@ void L3Cases::secureSessionAndDecoderRequirement_pos() {
     } \
     UT_ADD_TEST(Suite, secureSessionAndDecoderRequirement_pos) { \
         L3Cases::secureSessionAndDecoderRequirement_pos(); \
+    } \
+    UT_ADD_TEST(Suite, decryptSubsamplesAndPattern_pos) { \
+        L3Cases::decryptSubsamplesAndPattern_pos(); \
+    } \
+    UT_ADD_TEST(Suite, decryptBoundsAndInvalidInputsRejected_neg) { \
+        L3Cases::decryptBoundsAndInvalidInputsRejected_neg(); \
+    } \
+    UT_ADD_TEST(Suite, decryptClearSegmentWithAvBuffer_pos) { \
+        L3Cases::decryptClearSegmentWithAvBuffer_pos(); \
+    } \
+    UT_ADD_TEST(Suite, decryptWithoutKeysRejected_neg) { \
+        L3Cases::decryptWithoutKeysRejected_neg(); \
     }
 
 DRM_L3_SCHEME(VTS_L3_Drm, "clearkey")

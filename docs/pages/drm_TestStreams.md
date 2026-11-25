@@ -2,20 +2,20 @@
 
 ## Overview
 
-L1 requires no media or license. L2 uses independently prepared known vectors;
-the current L3 decrypt case uses a single demuxed encrypted sample and output
-reference. Full L3 playback still requires encrypted streams and an output
-oracle. No vectors, production keys, license responses, or media files are
-committed here.
+L1 requires no media or license. L2's known-vector cases use the legacy
+`IDrmPlugin.decrypt()` API; the L3 AIDL AVBuffer cases use a single demuxed
+encrypted sample and independent output reference. Full L3 playback still
+requires encrypted streams and an output oracle. No vectors, production keys,
+license responses, or media files are committed here.
 
 ## L2 Vector Configuration
 
 The common L2 cases run for ClearKey, Widevine and PlayReady. The legacy
-`IDrmPlugin.decrypt()` vector cases remain ClearKey-only; L2 also exercises
-`ICryptoPlugin.decrypt(DecryptArgs)` with AVBuffer handles for any scheme with
-configured vector inputs. `drm.schemes.<scheme>` enables a one-run matrix. Each enabled profile
-has its own factory, optional UUID override, required/optional policy and
-`l2`/`l3` inputs. See the [complete setup](../../README.md#one-run-clearkey-widevine-and-playready-testing).
+`IDrmPlugin.decrypt()` vector cases remain ClearKey-only; L2 does not exercise
+`ICryptoPlugin.decrypt(DecryptArgs)` or AVBuffer handles.
+`drm.schemes.<scheme>` enables a one-run matrix. Each enabled profile has its
+own factory, optional UUID override, required/optional policy and `l2`/`l3`
+inputs. See the [complete setup](../../README.md#one-run-clearkey-widevine-and-playready-testing).
 
 The tests load [drm_test_config.yaml](../../drm_test_configuration/drm_test_config.yaml)
 at DRM initialization using UT-Core KVP, as in the decoder/sink modules.
@@ -47,9 +47,6 @@ override the canonical scheme UUID. Existing single-scheme inputs still work.
 | `DRM_L2_SECURITY_LEVEL` | `drm.l2.security_level` |
 | `DRM_L2_CIPHERTEXT` | `drm.l2.content.encrypted_sample_file` |
 | `DRM_L2_PLAINTEXT` | `drm.l2.content.expected_plaintext_file` |
-| `DRM_L2_MODE` | `drm.l2.content.mode` |
-| `DRM_L2_PATTERN_ENCRYPT_BLOCKS` | `drm.l2.content.pattern.encrypt_blocks` |
-| `DRM_L2_PATTERN_SKIP_BLOCKS` | `drm.l2.content.pattern.skip_blocks` |
 | `DRM_L2_KID_HEX` | `drm.l2.content.kid_hex` |
 | `DRM_L2_KEY_HEX` | `drm.l2.content.key_hex` |
 | `DRM_L2_IV_HEX` | `drm.l2.content.iv_hex` |
@@ -73,9 +70,6 @@ Required inputs (provided through YAML or environment overrides):
 | `DRM_L2_KID_HEX` | Known-vector decrypt or generated response | 16-byte disposable KID as 32 hexadecimal characters |
 | `DRM_L2_KEY_HEX` | Generated ClearKey response only | Matching disposable AES-128 key as 32 hexadecimal characters |
 | `DRM_L2_IV_HEX` | Known-vector decrypt | Matching 16-byte IV as 32 hexadecimal characters |
-| `DRM_L2_MODE` | No | `AES_CTR` (default), `AES_CBC`, or `AES_CBC_CTS` for the AIDL vector case |
-| `DRM_L2_PATTERN_ENCRYPT_BLOCKS` | No | Non-negative integer; pattern encrypt block count, default `0` |
-| `DRM_L2_PATTERN_SKIP_BLOCKS` | No | Non-negative integer; pattern skip block count, default `0` |
 | `DRM_L2_LICENSE_RESPONSE` | Local mode except generated ClearKey | Accepted response file; ignored in HTTP mode. Never generate ClearKey JSON for Widevine/PlayReady |
 | `DRM_L2_LICENSE_MODE` | No | `local` (default) or `http` |
 | `DRM_L2_LICENSE_CONTENT_TYPE` | No | HTTP request MIME; scheme-specific default described below |
@@ -83,20 +77,19 @@ Required inputs (provided through YAML or environment overrides):
 | `DRM_L2_LICENSE_REQUEST_TIMEOUT_SECONDS` | No | Positive integer for total HTTP timeout and connection timeout; default `10` |
 
 Use the scheme's accepted init-data format and ensure its KID matches the
-license response and vector. The AIDL vector test uses the configured mode and
-pattern with AVBuffer handles, checks the byte count and exact plaintext, and
-tests subsample boundaries. Non-zero patterns must match the supplied vector;
-the default is an unpatterned AES-CTR sample. The separate legacy
-`IDrmPlugin.decrypt()` case remains ClearKey-only and does not prove AIDL
-AVBuffer behavior.
+license response and vector. L2 known-vector tests use the legacy
+`IDrmPlugin.decrypt()` API and do not prove AIDL AVBuffer behavior. Configure
+the L3 sample's mode and pattern settings to match the supplied encrypted
+sample and its independent plaintext.
 
-Both known-sample decrypt cases log VTS-client previews of the expected
-plaintext, input ciphertext and returned plaintext. Each preview includes the
-total byte count, hex and printable ASCII for at most 64 bytes; non-printable
-bytes appear as `.` and longer samples are marked truncated. These are fixture
-data previews, not key or license dumps. Use disposable test content.
-Encryption happens when generating the fixture; the test sends ciphertext to
-the DRM service and compares the returned plaintext with the reference file.
+The L2 legacy known-sample test and L3 `decryptSampleWithAvBuffer_pos` log
+VTS-client previews of the expected plaintext, input ciphertext, and returned
+plaintext. Each preview includes the total byte count, hex, and printable
+ASCII for at most 64 bytes; non-printable bytes appear as `.` and longer
+samples are marked truncated. These are fixture-data previews, not key or
+license dumps. Use disposable test content. Encryption happens when generating
+the fixture; the test submits ciphertext to the DRM service and compares the
+returned plaintext with the reference file.
 
 The [configuration template](../../drm_test_configuration/drm_test_config.yaml)
 contains the runtime input fields. Its legacy L1 settings and
@@ -118,6 +111,8 @@ contains the runtime input fields. Its legacy L1 settings and
 | `DRM_L3_MIME_TYPE` | `drm.l3.sample.mime_type` |
 | `DRM_L3_CODEC_MIME_TYPE` | `drm.l3.sample.codec_mime_type` |
 | `DRM_L3_MODE` | `drm.l3.sample.mode` |
+| `DRM_L3_PATTERN_ENCRYPT_BLOCKS` | `drm.l3.sample.pattern.encrypt_blocks` |
+| `DRM_L3_PATTERN_SKIP_BLOCKS` | `drm.l3.sample.pattern.skip_blocks` |
 | `DRM_L3_SECURE_SESSION_ENABLE` | `drm.l3.secure_session.enabled` |
 | `DRM_L3_REQUIRED_SECURITY_LEVEL` | `drm.l3.secure_session.required_security_level` |
 | `DRM_L3_LICENSE_MODE` | `drm.l3.license.mode` |
@@ -140,6 +135,8 @@ Required inputs (provided through YAML or environment overrides):
 | `DRM_L3_MIME_TYPE` | Yes | MIME type used in the key request |
 | `DRM_L3_CODEC_MIME_TYPE` | Vendor L3 cases | Actual codec MIME, e.g. `video/avc` or `audio/mp4a-latm`, used for secure-decoder queries; legacy ClearKey falls back to the key-request MIME |
 | `DRM_L3_MODE` | No | `AES_CTR` (default), `AES_CBC`, or `AES_CBC_CTS` |
+| `DRM_L3_PATTERN_ENCRYPT_BLOCKS` | No | Non-negative integer; pattern encrypt block count, default `0` |
+| `DRM_L3_PATTERN_SKIP_BLOCKS` | No | Non-negative integer; pattern skip block count, default `0` |
 | `DRM_L3_SECURE_SESSION_ENABLE` | No | YAML secure-session `enabled: true` or environment `1` executes the capability test |
 | `DRM_L3_REQUIRED_SECURITY_LEVEL` | For secure-session test | Explicit supported security level to request |
 | `DRM_L3_LICENSE_MODE` | No | `local` (default) or `http` |
@@ -147,12 +144,13 @@ Required inputs (provided through YAML or environment overrides):
 | `DRM_L3_LICENSE_URL` | HTTP mode | HTTP(S) endpoint including port; defaults to `http://127.0.0.1:8765/license` |
 | `DRM_L3_LICENSE_REQUEST_TIMEOUT_SECONDS` | No | Positive integer for total HTTP timeout and connection timeout; default `10` |
 
-This test checks the AIDL AVBuffer decrypt path only. It does not parse the
-container, validate stream metadata, or submit samples to a decoder.
-The suite probes the resolved session's secure-decoder requirement before
-loading the sample, then checks again after licensing. Protected-only paths
-skip non-secure sample comparison rather than trying to map protected output.
-The separate secure-session capability test does not prove secure decryption.
+The L3 sample cases check the AIDL AVBuffer decrypt path only. They do not parse
+the container, validate stream metadata, or submit samples to a decoder.
+Licensed plaintext-comparison cases probe the resolved session's
+secure-decoder requirement before loading the sample, then check again after
+licensing. Protected-only paths skip non-secure sample comparison rather than
+trying to map protected output. The separate secure-session capability test
+does not prove secure decryption.
 L2, L3 and secure-session tests default to disabled. Missing optional values
 default to factory `clearkey`, mode `AES_CTR`, or empty fixture inputs. YAML
 scalar values must fit within the UT-Core KVP limit of 255 bytes.

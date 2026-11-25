@@ -10,20 +10,18 @@ configured DRM factory is selected with `drm.factory_instance` in YAML (or the
 - **L1** checks DRM AIDL discovery, plugin/session lifecycle, capabilities,
   required properties, and documented invalid-input/session errors. It does
   not require a valid license or media playback.
-- **L2** runs common opt-in license/session tests and, when vector fixtures are
-  configured, known-vector decryption through
-  `ICryptoPlugin.decrypt(DecryptArgs)` with AVBuffer handles for ClearKey,
-  Widevine and PlayReady. The retained ClearKey-only vector also exercises the
-  legacy `IDrmPlugin.decrypt()` API.
-- **L3** has opt-in AVBuffer-backed sample decryption, key-removal/session-close
-  rejection, and secure-session capability checks. These are not end-to-end
+- **L2** runs common opt-in license/session tests. Its known-vector
+  `IDrmPlugin.decrypt()` cases are ClearKey-only and do not use AVBuffers.
+- **L3** has seven opt-in AIDL AVBuffer cases covering sample decryption,
+  subsamples/patterns, invalid inputs, key/session failures, clear-segment
+  pass-through, and secure-session capability. These are not end-to-end
   playback tests. Full encrypted-stream playback, key rotation, and
   protected-output policy validation still require target demux, decoder, and
   output-oracle integration.
 
 The test contract and L1/L2/L3 boundaries are in
 [`docs/pages/drm_TestSpecification.md`](docs/pages/drm_TestSpecification.md).
-The target-specific service and disposable L2 vector settings are in
+The target-specific service and disposable L2/L3 vector settings are in
 [`drm_test_configuration/drm_test_config.yaml`](drm_test_configuration/drm_test_config.yaml).
 
 ## Build and run
@@ -53,8 +51,8 @@ L3 success does not imply decoder playback or protected-output conformance.
 Disabled or unsupported optional cases are reported as skipped, not passed.
 An unconfigured run is not L2/L3 validation.
 
-All existing `DRM_L2_*`/`DRM_L3_*` environment variables still override their
-YAML fields, including empty values. No manual exports are needed for YAML-only
+Configured `DRM_L2_*`/`DRM_L3_*` environment variables override their YAML
+fields, including empty values. No manual exports are needed for YAML-only
 runs. Relative fixture paths resolve from the process working directory, as
 in the other VTS modules.
 
@@ -89,7 +87,18 @@ drm:
           init_data_file: "/fixtures/clearkey/init.bin"
           mime_type: "video/mp4"
           license_response_file: "/fixtures/clearkey/license.json"
-          # Supply ciphertext/plaintext/KID/IV for AIDL AVBuffer decryption.
+          # Supply ciphertext/plaintext/KID/IV for the legacy ClearKey vector.
+      l3:
+        enabled: true
+        sample:
+          init_data_file: "/fixtures/clearkey/init.bin"
+          encrypted_sample_file: "/fixtures/clearkey/cipher.bin"
+          expected_plaintext_file: "/fixtures/clearkey/plain.bin"
+          license_response_file: "/fixtures/clearkey/license.json"
+          kid_hex: "<32 hexadecimal characters>"
+          iv_hex: "<32 hexadecimal characters>"
+          mime_type: "video/mp4"
+          mode: "AES_CTR"
     widevine:
       enabled: true
       required: true
@@ -114,6 +123,9 @@ drm:
           mime_type: "video/mp4"
           codec_mime_type: "video/avc"
           mode: "AES_CTR"
+          pattern:
+            encrypt_blocks: 0
+            skip_blocks: 0
           init_data_file: "/fixtures/widevine/init.bin"
           encrypted_sample_file: "/fixtures/widevine/cipher.bin"
           expected_plaintext_file: "/fixtures/widevine/plain.bin"
@@ -134,10 +146,10 @@ drm:
 Replace the example paths, security levels and license adapters with the
 vendor-approved test setup. Enable and populate `l3` separately for ClearKey
 and PlayReady as needed; missing `l2`/`l3` sections default to disabled.
-Only ClearKey local JSON generation needs a disposable raw key. AIDL AVBuffer
-vector cases need known ciphertext/plaintext/KID/IV inputs per scheme; they
-skip when those vector fields are absent. The ClearKey legacy-vector cases
-continue to require the same vector inputs.
+Only ClearKey local JSON generation needs a disposable raw key. When L3 is
+enabled, its AIDL AVBuffer cases require matching ciphertext, plaintext,
+KID/IV, init data, and an accepted license response for that scheme. The
+ClearKey legacy-vector cases also require their L2 vector inputs.
 
 The registered groups are `VTS_L2_DrmClearKey`, `VTS_L2_DrmWidevine`,
 `VTS_L2_DrmPlayReady`, and `VTS_L3_Drm` (ClearKey), `VTS_L3_DrmWidevine`,

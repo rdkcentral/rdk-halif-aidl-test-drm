@@ -138,7 +138,9 @@ void DrmSchemeTest::SetUp() {
         UT_IGNORE_TEST();
     }
     UT_ASSERT_TRUE_FATAL(std::string(enabled) == "1");
-    const DrmTestProfile& profile = *vts_drm_active_profile();
+    const DrmTestProfile* activeProfile = vts_drm_active_profile();
+    UT_ASSERT_TRUE_FATAL(activeProfile != nullptr);
+    const DrmTestProfile& profile = *activeProfile;
     const char* configuredInstance = vts_drm_config_value("DRM_FACTORY_INSTANCE");
     UT_ASSERT_TRUE_FATAL(configuredInstance != nullptr && configuredInstance[0] != '\0');
     const std::string instance = configuredInstance;

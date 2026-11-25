@@ -25,11 +25,10 @@
 ## Introduction
 
 This document defines the scope and level boundaries for DRM testing: L1
-validates API contracts, L2 validates key exchange and known-vector crypto
-through AIDL AVBuffers and the retained legacy API without playback, and L3/L4
-covers higher-level crypto and playback integration. Current
-L3 coverage is limited to sample-level AVBuffer decryption, failure handling,
-and secure-session capability checks.
+validates API contracts, L2 validates key exchange and retained legacy
+known-vector decryption without playback, and L3 validates sample-level AIDL
+AVBuffer crypto and secure-session capability. L4 and future work cover
+playback integration.
 
 ### References
 
@@ -43,8 +42,7 @@ and secure-session capability checks.
 
 `IDrmFactory` advertises schemes and creates `IDrmPlugin` and `ICryptoPlugin`.
 The DRM plugin manages sessions, license requests/responses, properties, and
-key status. The crypto plugin binds a DRM session and supplies the AIDL
-AVBuffer decryption path.
+key status. L3 tests use the crypto plugin's AIDL AVBuffer decryption path.
 
 The test client, not the HAL, owns license-server transport. Tests can POST
 the plugin's challenge to a configured test adapter or load an accepted
@@ -65,13 +63,13 @@ group does not by itself mean that end-to-end playback has been implemented.
 applications, or a complete audio/video pipeline for each DRM scheme under
 test: ClearKey, Widevine and PlayReady. Phase 1 is a scheme-independent HAL
 test solution, not a ClearKey-only solution. ClearKey is the initial software
-reference implementation; the same common license/session and AVBuffer
-test procedures are reused for vendor Widevine and PlayReady implementations,
-subject to their advertised capabilities.
+reference implementation; common license/session procedures are reused for
+vendor Widevine and PlayReady implementations, subject to their advertised
+capabilities.
 
 Each scheme requires its own configured factory/UUID, supported MIME/security
-level, init data, and accepted test-license flow. AVBuffer sample comparison
-additionally requires matching encrypted-sample, KID/IV and plaintext fixtures.
+level, init data, and accepted test-license flow. L3 AVBuffer sample comparison
+additionally requires matching encrypted-sample, KID/IV, and plaintext fixtures.
 Widevine and PlayReady do not use ClearKey JSON licenses or raw-key fixtures.
 The retained legacy `IDrmPlugin.decrypt()` vector tests and empty-init-data
 negative case are ClearKey-specific exceptions, not common requirements.
@@ -81,25 +79,26 @@ negative case are ClearKey-specific exceptions, not common requirements.
 - Discover the factory and create DRM/Crypto plugins.
 - Exercise DRM session lifecycle, key requests/responses, and key status.
 - Associate the DRM session with Crypto and decrypt a known AES-encrypted
-  sample through `ICryptoPlugin.decrypt(DecryptArgs)` using AVBuffer handles.
+  sample through `ICryptoPlugin.decrypt(DecryptArgs)` using AVBuffer handles
+  in L3.
 - Compare the decrypted bytes with an independent plaintext reference.
 - Run the VTS without requiring OCDM, a player, or full middleware integration.
 
 The current VTS has L1 factory/session coverage, common L2 license/session
 coverage for configured ClearKey, Widevine and PlayReady profiles, retained
-ClearKey-only legacy `IDrmPlugin.decrypt()` vectors, opt-in L2 known-vector
-decryption through `ICryptoPlugin.decrypt(DecryptArgs)` with AVBuffer handles,
-and separate sample-level AVBuffer cases under L3. A single run can exercise
-all enabled profiles using their exact UUIDs, services and independent license
-fixtures.
+ClearKey-only legacy `IDrmPlugin.decrypt()` vectors under L2, and sample-level
+`ICryptoPlugin.decrypt(DecryptArgs)` AVBuffer cases under L3. A single run can
+exercise all enabled profiles using their exact UUIDs, services, and
+independent license fixtures.
 Optional unadvertised capabilities skip; required capabilities and operational
 failures fail. Secure-decoder-only sample cases skip CPU-readable plaintext
 comparison and do not establish protected-path conformance.
-The L2 AIDL cases check known plaintext, byte counts, subsamples, configured
-modes/patterns, bounds, handle ownership and documented negative errors. They
-remain sample/API tests, not comprehensive vendor qualification or protected
-playback conformance. These tests have not established target conformance
-merely by being present or passing against the software reference service.
+The L3 AVBuffer cases check known plaintext, byte counts, subsamples,
+configured modes/patterns, bounds, handle ownership, and documented negative
+errors. They remain sample/API tests, not comprehensive vendor qualification
+or protected playback conformance. These tests have not established target
+conformance merely by being present or passing against the software reference
+service.
 
 **Phase 1 exit criterion:** For each required DRM scheme on the target, VTS
 can independently open a DRM session, acquire/provide a key and bind the
@@ -134,8 +133,9 @@ VTS foundation.
 
 ## Test Streams Specification
 
-See [DRM Test Streams](drm_TestStreams.md) for L2 vector inputs and future L3
-stream requirements. No production keys or licensed media are packaged here.
+See [DRM Test Streams](drm_TestStreams.md) for L2 legacy-vector inputs and L3
+sample-vector requirements. No production keys or licensed media are packaged
+here.
 
 ## L2 Test Specification
 
@@ -143,59 +143,57 @@ All cases below are opt-in. They run only when L2 is enabled and do not
 submit content to a decoder. “Implemented” describes a registered test case;
 it does not imply the test has been run or passed on a target.
 
-| Current test case | Current coverage |
-|-------------------|------------------|
-| `keyRequestAndResponse_pos` | Opens a session, requests/provides a streaming key, binds the crypto session, and checks that key status is non-empty |
-| `decryptKnownSample_pos` | ClearKey-only legacy `IDrmPlugin.decrypt()` comparison with known plaintext |
-| `removeKeysRejectsDecrypt_neg` | ClearKey-only legacy decrypt baseline, then `ERROR_DRM_NO_LICENSE` after key removal |
-| `emptyLicenseResponseRejected_neg` | Common case: successfully request a license, then assert `BAD_VALUE` for an empty response |
-| `invalidInitDataRejected_neg` | ClearKey-only `BAD_VALUE` rejection for empty init data; not assumed for vendor renewals |
-| `closedSessionRejectsOperations_neg` | Asserts `ERROR_DRM_SESSION_NOT_OPENED` for a key request using a closed session |
-| `decryptKnownSampleWithAvBuffer_pos` | Compares `ICryptoPlugin.decrypt(DecryptArgs)` output and byte count with the configured vector; the caller retains and releases AVBuffer handles |
-| `decryptSubsamplesAndPattern_pos` | Exercises multiple and clear/encrypted subsamples for an unpatterned AES-CTR vector; validates configured mode and pattern values against the matching full-sample vector |
-| `decryptBoundsAndInvalidInputsRejected_neg` | Asserts documented errors for short source/destination bounds, invalid AVBuffer handles, and empty subsamples |
-| `removedKeysAndClosedSessionRejectAvBufferDecrypt_neg` | Asserts `ERROR_DRM_NO_LICENSE` after key removal and `ERROR_DRM_SESSION_NOT_OPENED` after session closure |
+| Case ID | Current test case | Current coverage |
+|---:|---|---|
+| 001 | `fixtureValidation_pos` | Validates that configured init data is readable and non-empty. |
+| 002 | `keyRequestAndResponse_pos` | Opens a session, requests/provides a streaming key, binds crypto, and checks key status. |
+| 003 | `decryptKnownSample_pos` | ClearKey-only legacy `IDrmPlugin.decrypt()` comparison with known plaintext. |
+| 004 | `removeKeysRejectsDecrypt_neg` | ClearKey-only legacy decrypt baseline, then `ERROR_DRM_NO_LICENSE` after key removal. |
+| 005 | `emptyLicenseResponseRejected_neg` | Requests a license, then asserts `BAD_VALUE` for an empty response. |
+| 006 | `closedSessionRejectsOperations_neg` | Asserts `ERROR_DRM_SESSION_NOT_OPENED` for a key request using a closed session. |
+| 007 | `invalidInitDataRejected_neg` | ClearKey-only `BAD_VALUE` rejection for empty init data; not assumed for vendor renewals. |
+| 008 | `offlineKeySetCreated_pos` | Checks the supported offline-license flow and non-empty key-set identifier. |
+| 009 | `listenerCallbacks_pos` | Checks license-related event, expiration, and key-change callbacks. |
+| 010 | `getKeyRequestResourceContention_neg` | Checks the documented resource-contention error for key requests. |
+| 011 | `getKeyRequestInvalidStateAndSessionLost_neg` | Checks invalid-state handling and the session-lost callback. |
+| 012 | `malformedClearKeyEmptyKeyRejected_neg` | Checks rejection of a malformed license containing an empty key. |
+| 013 | `malformedClearKeyLongKeyRejected_neg` | Checks rejection of a malformed license containing an over-length key. |
+| 014 | `badLevelNotSupported_neg` | Checks that the profile does not advertise `HW_SECURE_ALL` for `video/mp4`. |
+| 015 | `provisioningStatusAndExchange_pos` | Checks session-open behavior at selected levels and provisioning when required and enabled. |
 
-### L2 AIDL decrypt coverage
-
-L2 adds known-vector decryption through `ICryptoPlugin.decrypt(DecryptArgs)`
-with AVBuffer handles, alongside the retained legacy `IDrmPlugin.decrypt()`
-case. The AIDL cases cover exact plaintext and byte-count checks, mixed
-clear/encrypted subsamples, supported pattern handling, invalid bounds and
-subsample inputs, and buffer-handle ownership and lifetime. Negative cases
-assert the documented AIDL error codes. Cases are registered per scheme where
-that scheme provides the configured vector and license fixtures.
-
-An AVBuffer sample-decrypt case also exists in the L3 group. It remains a
-separate higher-level sample/API check; it does not replace the L2 AIDL
-coverage. Detailed procedures and any target-dependent limitations are in the
-[L2 specification](drm_L2_Low-Level_TestSpecification.md).
-L2 must not submit data to a decoder or claim playback coverage.
+L2 does not exercise `ICryptoPlugin.decrypt(DecryptArgs)` or AVBuffer handles.
+Its known-vector cases use the separate legacy `IDrmPlugin.decrypt()` API and
+are ClearKey-specific. See the [L2 specification](drm_L2_Low-Level_TestSpecification.md)
+for exact behavior and profile-dependent skips. L2 must not submit data to a
+decoder or claim playback coverage.
 
 ## L3 Test Specification
 
 ### Prerequisites
 
 The current sample-level L3 cases require the DRM service and configured
-fixtures. `decryptSampleWithAvBuffer_pos` and
-`removedKeysAndClosedSessionRejectDecrypt_neg` additionally require AVBuffer
-allocation/import and helper services; they use a pre-demuxed sample and do not
-need a media decoder. Full playback coverage will additionally require validated
+fixtures. AVBuffer cases additionally require AVBuffer allocation/import and
+helper services; they use pre-demuxed samples and do not need a media decoder.
+Full playback coverage will additionally require validated
 AVBuffer ownership, demux/media pipeline and decoders, encrypted streams, and a
 defined output oracle. Secure-path claims additionally require protected
 buffers, secure decoder support, and target output-policy validation.
 
 ### Phase 1 test cases
 
-All three cases are opt-in. The secure-session case additionally requires its
-secure-session option and target configuration. These tests are sample/API
-checks, not end-to-end playback conformance.
+All seven cases are opt-in. Case 003 additionally requires its secure-session
+option and target configuration. These are sample/API checks, not end-to-end
+playback conformance.
 
-| Current test case | Current coverage |
-|---|---|
-| `decryptSampleWithAvBuffer_pos` | Acquires/provides a key, decrypts one configured sample through `ICryptoPlugin.decrypt(DecryptArgs)` using AVBuffer handles, checks byte count and exact plaintext, and cleans up |
-| `removedKeysAndClosedSessionRejectDecrypt_neg` | Checks AIDL decrypt failure after key removal and after session close, with expected service-specific errors |
-| `secureSessionAndDecoderRequirement_pos` | Checks the requested session security level and `requiresSecureDecoderComponent` result|
+| Case ID | Current test case | Current coverage |
+|---:|---|---|
+| 001 | `decryptSampleWithAvBuffer_pos` | Acquires/provides a key, decrypts one configured sample through AIDL AVBuffers, and checks byte count and exact plaintext. |
+| 002 | `removedKeysAndClosedSessionRejectDecrypt_neg` | Checks AIDL decrypt failure after key removal and after session close. |
+| 003 | `secureSessionAndDecoderRequirement_pos` | Checks the requested session security level and `requiresSecureDecoderComponent` result. |
+| 004 | `decryptSubsamplesAndPattern_pos` | Validates multiple subsamples, configured patterns, and clear-tail handling for unpatterned AES-CTR. |
+| 005 | `decryptBoundsAndInvalidInputsRejected_neg` | Checks documented errors for short buffers, invalid handles, and empty subsamples. |
+| 006 | `decryptClearSegmentWithAvBuffer_pos` | Checks clear-only `UNENCRYPTED` pass-through; it does not perform a cryptographic transform. |
+| 007 | `decryptWithoutKeysRejected_neg` | Checks that encrypted AVBuffer decryption without a key returns `ERROR_DRM_NO_LICENSE`. |
 
 ### Phase 2 L3/L4 playback coverage
 

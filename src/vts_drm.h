@@ -58,6 +58,7 @@
 
 #include <binder/IServiceManager.h>
 #include <binder/Status.h>
+#include <utils/Errors.h>
 #include <utils/String16.h>
 
 #include <com/rdk/hal/drm/IDrmFactory.h>
@@ -81,6 +82,110 @@ using com::rdk::hal::drm::ICryptoPlugin;
 using com::rdk::hal::drm::IDrmFactory;
 using com::rdk::hal::drm::IDrmPlugin;
 using com::rdk::hal::drm::Uuid;
+
+inline const char* vts_drm_status_error_name(const Status& status) {
+    if (status.isOk()) {
+        return "OK";
+    }
+    if (status.exceptionCode() != Status::EX_SERVICE_SPECIFIC) {
+        return "NOT_SERVICE_SPECIFIC";
+    }
+
+    using com::rdk::hal::drm::DrmErrors;
+    switch (status.serviceSpecificErrorCode()) {
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_UNKNOWN):
+            return "ERROR_DRM_UNKNOWN";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_NO_LICENSE):
+            return "ERROR_DRM_NO_LICENSE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_LICENSE_EXPIRED):
+            return "ERROR_DRM_LICENSE_EXPIRED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_SESSION_NOT_OPENED):
+            return "ERROR_DRM_SESSION_NOT_OPENED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_DECRYPT_UNIT_NOT_INITIALIZED):
+            return "ERROR_DRM_DECRYPT_UNIT_NOT_INITIALIZED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_DECRYPT):
+            return "ERROR_DRM_DECRYPT";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_CANNOT_HANDLE):
+            return "ERROR_DRM_CANNOT_HANDLE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_TAMPER_DETECTED):
+            return "ERROR_DRM_TAMPER_DETECTED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_NOT_PROVISIONED):
+            return "ERROR_DRM_NOT_PROVISIONED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_DEVICE_REVOKED):
+            return "ERROR_DRM_DEVICE_REVOKED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_RESOURCE_BUSY):
+            return "ERROR_DRM_RESOURCE_BUSY";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION):
+            return "ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_INSUFFICIENT_SECURITY):
+            return "ERROR_DRM_INSUFFICIENT_SECURITY";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_FRAME_TOO_LARGE):
+            return "ERROR_DRM_FRAME_TOO_LARGE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_RESOURCE_CONTENTION):
+            return "ERROR_DRM_RESOURCE_CONTENTION";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_SESSION_LOST_STATE):
+            return "ERROR_DRM_SESSION_LOST_STATE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_INVALID_STATE):
+            return "ERROR_DRM_INVALID_STATE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_CERTIFICATE_MALFORMED):
+            return "ERROR_DRM_CERTIFICATE_MALFORMED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_CERTIFICATE_MISSING):
+            return "ERROR_DRM_CERTIFICATE_MISSING";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_CRYPTO_LIBRARY):
+            return "ERROR_DRM_CRYPTO_LIBRARY";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_GENERIC_OEM):
+            return "ERROR_DRM_GENERIC_OEM";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_GENERIC_PLUGIN):
+            return "ERROR_DRM_GENERIC_PLUGIN";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_INIT_DATA):
+            return "ERROR_DRM_INIT_DATA";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_KEY_NOT_LOADED):
+            return "ERROR_DRM_KEY_NOT_LOADED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_LICENSE_PARSE):
+            return "ERROR_DRM_LICENSE_PARSE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_LICENSE_POLICY):
+            return "ERROR_DRM_LICENSE_POLICY";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_LICENSE_RELEASE):
+            return "ERROR_DRM_LICENSE_RELEASE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_LICENSE_REQUEST_REJECTED):
+            return "ERROR_DRM_LICENSE_REQUEST_REJECTED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_LICENSE_RESTORE):
+            return "ERROR_DRM_LICENSE_RESTORE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_LICENSE_STATE):
+            return "ERROR_DRM_LICENSE_STATE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_MEDIA_FRAMEWORK):
+            return "ERROR_DRM_MEDIA_FRAMEWORK";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_PROVISIONING_CERTIFICATE):
+            return "ERROR_DRM_PROVISIONING_CERTIFICATE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_PROVISIONING_CONFIG):
+            return "ERROR_DRM_PROVISIONING_CONFIG";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_PROVISIONING_PARSE):
+            return "ERROR_DRM_PROVISIONING_PARSE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_PROVISIONING_REQUEST_REJECTED):
+            return "ERROR_DRM_PROVISIONING_REQUEST_REJECTED";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_PROVISIONING_RETRY):
+            return "ERROR_DRM_PROVISIONING_RETRY";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_SECURE_STOP_RELEASE):
+            return "ERROR_DRM_SECURE_STOP_RELEASE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_STORAGE_READ):
+            return "ERROR_DRM_STORAGE_READ";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_STORAGE_WRITE):
+            return "ERROR_DRM_STORAGE_WRITE";
+        case static_cast<int32_t>(DrmErrors::ERROR_DRM_ZERO_SUBSAMPLES):
+            return "ERROR_DRM_ZERO_SUBSAMPLES";
+        case android::BAD_VALUE:
+            return "BAD_VALUE";
+        default:
+            break;
+    }
+
+    const int32_t error = status.serviceSpecificErrorCode();
+    if (error <= static_cast<int32_t>(DrmErrors::ERROR_DRM_VENDOR_MAX) &&
+            error >= static_cast<int32_t>(DrmErrors::ERROR_DRM_VENDOR_MIN)) {
+        return "ERROR_DRM_VENDOR_SPECIFIC";
+    }
+    return "UNKNOWN_DRM_ERROR";
+}
 
 extern sp<IDrmFactory> gDrmFactory;
 extern std::string gDrmFactoryServiceName;
@@ -126,9 +231,9 @@ private:
     do { \
         UT_LOG_INFO("Calling %s", #call); \
         const Status drmStatus = (call); \
-        UT_LOG_INFO("Result %s, status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result %s, status:[isOK:%s, exception:%d, error:%s]", \
                 #call, drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         DRM_STATUS_SUCCESS(drmStatus); \
     } while (0)
 
@@ -136,9 +241,9 @@ private:
     do { \
         UT_LOG_INFO("Calling %s", #call); \
         const Status drmStatus = (call); \
-        UT_LOG_INFO("Result %s, status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result %s, status:[isOK:%s, exception:%d, error:%s]", \
                 #call, drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_FALSE(drmStatus.isOk()) << #call; \
         UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) << #call; \
         UT_ASSERT_EQUAL(drmStatus.serviceSpecificErrorCode(), \
@@ -149,9 +254,9 @@ private:
     do { \
         UT_LOG_INFO("Calling %s", #call); \
         const Status drmStatus = (call); \
-        UT_LOG_INFO("Result %s, status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result %s, status:[isOK:%s, exception:%d, error:%s]", \
                 #call, drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_FALSE(drmStatus.isOk()) << #call; \
         UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) << #call; \
         const int32_t error = drmStatus.serviceSpecificErrorCode(); \
@@ -237,10 +342,10 @@ private:
         const Status drmStatus = gDrmFactory->createDrmPlugin( \
                 (uuid), (appPackageName), &(drmPlugin)); \
         UT_LOG_INFO( \
-                "Result IDrmFactory::createDrmPlugin(), status:[isOK:%s, exception:%d, error:%d], drmPlugin:%p", \
+                "Result IDrmFactory::createDrmPlugin(), status:[isOK:%s, exception:%d, error:%s], drmPlugin:%p", \
                 drmStatus.isOk() ? "true" : "false", \
                 drmStatus.exceptionCode(), \
-                drmStatus.serviceSpecificErrorCode(), \
+                vts_drm_status_error_name(drmStatus), \
                 static_cast<void*>((drmPlugin).get())); \
         UT_ASSERT_FALSE(drmStatus.isOk()); \
         UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC); \
@@ -270,10 +375,10 @@ private:
         const Status drmStatus = gDrmFactory->createCryptoPlugin( \
                 (uuid), initData, &(cryptoPlugin)); \
         UT_LOG_INFO( \
-                "Result IDrmFactory::createCryptoPlugin(), status:[isOK:%s, exception:%d, error:%d], cryptoPlugin:%p", \
+                "Result IDrmFactory::createCryptoPlugin(), status:[isOK:%s, exception:%d, error:%s], cryptoPlugin:%p", \
                 drmStatus.isOk() ? "true" : "false", \
                 drmStatus.exceptionCode(), \
-                drmStatus.serviceSpecificErrorCode(), \
+                vts_drm_status_error_name(drmStatus), \
                 static_cast<void*>((cryptoPlugin).get())); \
         UT_ASSERT_TRUE(drmStatus.isOk() || drmStatus.exceptionCode() == Status::EX_SERVICE_SPECIFIC); \
         UT_ASSERT_TRUE((cryptoPlugin) == nullptr); \
@@ -283,18 +388,18 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::openSession(), level:%d", static_cast<int32_t>(level)); \
         (resultStatus) = (drmPlugin)->openSession((level), &(session)); \
-        UT_LOG_INFO("Result IDrmPlugin::openSession(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::openSession(), status:[isOK:%s, exception:%d, error:%s]", \
                 (resultStatus).isOk() ? "true" : "false", \
-                (resultStatus).exceptionCode(), (resultStatus).serviceSpecificErrorCode()); \
+                (resultStatus).exceptionCode(), vts_drm_status_error_name(resultStatus)); \
     } while (0)
 
 #define DRM_PLUGIN_OPEN_SESSION_SUCCESS(drmPlugin, level, session) \
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::openSession(), level:%d", static_cast<int32_t>(level)); \
         const Status drmStatus = (drmPlugin)->openSession((level), &(session)); \
-        UT_LOG_INFO("Result IDrmPlugin::openSession(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::openSession(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -303,9 +408,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::closeSession()"); \
         const Status drmStatus = (drmPlugin)->closeSession((session)); \
-        UT_LOG_INFO("Result IDrmPlugin::closeSession(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::closeSession(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -314,9 +419,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getSecurityLevel()"); \
         const Status drmStatus = (drmPlugin)->getSecurityLevel((session), &(level)); \
-        UT_LOG_INFO("Result IDrmPlugin::getSecurityLevel(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getSecurityLevel(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -325,9 +430,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getSecurityLevel()"); \
         const Status drmStatus = (drmPlugin)->getSecurityLevel(session, &(level)); \
-        UT_LOG_INFO("Result IDrmPlugin::getSecurityLevel(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getSecurityLevel(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_FALSE(drmStatus.isOk()) << "IDrmPlugin::getSecurityLevel()"; \
         UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) \
                 << "IDrmPlugin::getSecurityLevel()"; \
@@ -339,9 +444,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getHdcpLevels()"); \
         const Status drmStatus = (drmPlugin)->getHdcpLevels(&(levels)); \
-        UT_LOG_INFO("Result IDrmPlugin::getHdcpLevels(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getHdcpLevels(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -350,9 +455,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getNumberOfSessions()"); \
         const Status drmStatus = (drmPlugin)->getNumberOfSessions(&(sessions)); \
-        UT_LOG_INFO("Result IDrmPlugin::getNumberOfSessions(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getNumberOfSessions(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -361,9 +466,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getMetrics()"); \
         const Status drmStatus = (drmPlugin)->getMetrics(&(metrics)); \
-        UT_LOG_INFO("Result IDrmPlugin::getMetrics(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getMetrics(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         if (!drmStatus.isOk() && \
                 drmStatus.exceptionCode() == Status::EX_SERVICE_SPECIFIC && \
                 drmStatus.serviceSpecificErrorCode() == static_cast<int32_t>( \
@@ -379,9 +484,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getMetrics()"); \
         const Status drmStatus = (drmPlugin)->getMetrics(&(metrics)); \
-        UT_LOG_INFO("Result IDrmPlugin::getMetrics(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getMetrics(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_FALSE(drmStatus.isOk()) << "IDrmPlugin::getMetrics()"; \
         UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) \
                 << "IDrmPlugin::getMetrics()"; \
@@ -393,9 +498,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getPropertyString()"); \
         const Status drmStatus = (drmPlugin)->getPropertyString((property), &(value)); \
-        UT_LOG_INFO("Result IDrmPlugin::getPropertyString(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getPropertyString(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -404,9 +509,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getPropertyString()"); \
         const Status drmStatus = (drmPlugin)->getPropertyString((property), &(value)); \
-        UT_LOG_INFO("Result IDrmPlugin::getPropertyString(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getPropertyString(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_FALSE(drmStatus.isOk()) << "IDrmPlugin::getPropertyString()"; \
         UT_ASSERT_EQUAL(drmStatus.exceptionCode(), Status::EX_SERVICE_SPECIFIC) \
                 << "IDrmPlugin::getPropertyString()"; \
@@ -418,9 +523,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::getPropertyByteArray()"); \
         const Status drmStatus = (drmPlugin)->getPropertyByteArray((property), &(value)); \
-        UT_LOG_INFO("Result IDrmPlugin::getPropertyByteArray(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getPropertyByteArray(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         if (!drmStatus.isOk() && \
                 drmStatus.exceptionCode() == Status::EX_SERVICE_SPECIFIC && \
                 drmStatus.serviceSpecificErrorCode() == static_cast<int32_t>( \
@@ -436,9 +541,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::queryKeyStatus()"); \
         const Status drmStatus = (drmPlugin)->queryKeyStatus((session), &(keyStatus)); \
-        UT_LOG_INFO("Result IDrmPlugin::queryKeyStatus(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::queryKeyStatus(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -447,9 +552,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::removeKeys()"); \
         const Status drmStatus = (drmPlugin)->removeKeys((session)); \
-        UT_LOG_INFO("Result IDrmPlugin::removeKeys(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::removeKeys(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -459,9 +564,9 @@ private:
         UT_LOG_INFO("Calling IDrmPlugin::getKeyRequest()"); \
         const Status drmStatus = (drmPlugin)->getKeyRequest( \
                 (scope), (initData), (mime), (keyType), parameters, &(request)); \
-        UT_LOG_INFO("Result IDrmPlugin::getKeyRequest(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getKeyRequest(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -471,18 +576,18 @@ private:
         UT_LOG_INFO("Calling IDrmPlugin::getProvisionRequest()"); \
         (resultStatus) = (drmPlugin)->getProvisionRequest( \
                 (certificateType), (certificateAuthority), &(request)); \
-        UT_LOG_INFO("Result IDrmPlugin::getProvisionRequest(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::getProvisionRequest(), status:[isOK:%s, exception:%d, error:%s]", \
                 (resultStatus).isOk() ? "true" : "false", \
-                (resultStatus).exceptionCode(), (resultStatus).serviceSpecificErrorCode()); \
+                (resultStatus).exceptionCode(), vts_drm_status_error_name(resultStatus)); \
     } while (0)
 
 #define DRM_PLUGIN_PROVIDE_PROVISION_RESPONSE_SUCCESS(drmPlugin, response, result) \
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::provideProvisionResponse()"); \
         const Status drmStatus = (drmPlugin)->provideProvisionResponse((response), &(result)); \
-        UT_LOG_INFO("Result IDrmPlugin::provideProvisionResponse(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::provideProvisionResponse(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -491,9 +596,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::setListener()"); \
         const Status drmStatus = (drmPlugin)->setListener((listener)); \
-        UT_LOG_INFO("Result IDrmPlugin::setListener(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::setListener(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -502,9 +607,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::setPlaybackId()"); \
         const Status drmStatus = (drmPlugin)->setPlaybackId((session), (playbackId)); \
-        UT_LOG_INFO("Result IDrmPlugin::setPlaybackId(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::setPlaybackId(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -513,9 +618,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::setCipherAlgorithm()"); \
         const Status drmStatus = (drmPlugin)->setCipherAlgorithm((session), (algorithm)); \
-        UT_LOG_INFO("Result IDrmPlugin::setCipherAlgorithm(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::setCipherAlgorithm(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -524,9 +629,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::setMacAlgorithm()"); \
         const Status drmStatus = (drmPlugin)->setMacAlgorithm((session), (algorithm)); \
-        UT_LOG_INFO("Result IDrmPlugin::setMacAlgorithm(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::setMacAlgorithm(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -536,9 +641,9 @@ private:
         UT_LOG_INFO("Calling IDrmPlugin::decrypt()"); \
         const Status drmStatus = (drmPlugin)->decrypt( \
                 (session), (keyId), (input), (iv), &(output)); \
-        UT_LOG_INFO("Result IDrmPlugin::decrypt(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::decrypt(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -547,9 +652,9 @@ private:
     do { \
         UT_LOG_INFO("Calling IDrmPlugin::requiresSecureDecoder()"); \
         const Status drmStatus = (drmPlugin)->requiresSecureDecoder((mime), (level), &(required)); \
-        UT_LOG_INFO("Result IDrmPlugin::requiresSecureDecoder(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result IDrmPlugin::requiresSecureDecoder(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -558,9 +663,9 @@ private:
     do { \
         UT_LOG_INFO("Calling ICryptoPlugin::setMediaDrmSession()"); \
         const Status drmStatus = (cryptoPlugin)->setMediaDrmSession((session)); \
-        UT_LOG_INFO("Result ICryptoPlugin::setMediaDrmSession(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result ICryptoPlugin::setMediaDrmSession(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -569,9 +674,9 @@ private:
     do { \
         UT_LOG_INFO("Calling ICryptoPlugin::notifyResolution()"); \
         const Status drmStatus = (cryptoPlugin)->notifyResolution((width), (height)); \
-        UT_LOG_INFO("Result ICryptoPlugin::notifyResolution(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result ICryptoPlugin::notifyResolution(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -580,9 +685,9 @@ private:
     do { \
         UT_LOG_INFO("Calling ICryptoPlugin::requiresSecureDecoderComponent()"); \
         const Status drmStatus = (cryptoPlugin)->requiresSecureDecoderComponent((mime), &(required)); \
-        UT_LOG_INFO("Result ICryptoPlugin::requiresSecureDecoderComponent(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result ICryptoPlugin::requiresSecureDecoderComponent(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
@@ -591,9 +696,9 @@ private:
     do { \
         UT_LOG_INFO("Calling ICryptoPlugin::decrypt()"); \
         const Status drmStatus = (cryptoPlugin)->decrypt((args), &(decryptedBytes)); \
-        UT_LOG_INFO("Result ICryptoPlugin::decrypt(), status:[isOK:%s, exception:%d, error:%d]", \
+        UT_LOG_INFO("Result ICryptoPlugin::decrypt(), status:[isOK:%s, exception:%d, error:%s]", \
                 drmStatus.isOk() ? "true" : "false", \
-                drmStatus.exceptionCode(), drmStatus.serviceSpecificErrorCode()); \
+                drmStatus.exceptionCode(), vts_drm_status_error_name(drmStatus)); \
         UT_ASSERT_TRUE_FATAL(drmStatus.isOk()); \
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)

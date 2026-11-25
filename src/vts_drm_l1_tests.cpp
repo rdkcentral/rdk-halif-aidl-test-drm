@@ -2123,7 +2123,7 @@ UT_ADD_TEST(VTS_L1_Drm, setMediaDrmSession_neg) {
 }
 
 /**
- * @brief Decrypts a clear segment through the AIDL AVBuffer path without a license.
+ * @brief Checks AVBuffer pass-through for a clear-only segment via the decrypt API.
  *
  * **Test Group ID:** Basic: 01@n
  * **Test Case ID:** 047@n

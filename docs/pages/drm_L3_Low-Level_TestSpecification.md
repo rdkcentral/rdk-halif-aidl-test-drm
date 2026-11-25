@@ -1,168 +1,71 @@
-# DRM L3 Low Level Test Specification and Procedure Documentation
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Acronyms, Terms and Abbreviations](#acronyms-terms-and-abbreviations)
-- [References](#references)
-- [Test Configuration](#test-configuration)
-- [L3 Tests](#l3-tests)
+# DRM L3 Low-Level Test Specification
 
 ## Overview
 
-The DRM L3 group implements an opt-in AVBuffer-backed sample decrypt test, a
-key-removal/session-close negative test, and a secure-session capability test.
-They are not end-to-end encrypted playback tests. The sample test accepts a
-pre-demuxed encrypted sample and compares the decrypted bytes against an
-independent plaintext fixture; it does not parse a container, submit data to a
-decoder, or validate audio/video output.
+The current L3 group contains seven opt-in functional checks covering AIDL
+AVBuffer sample decryption, subsamples and patterns, invalid buffer inputs,
+missing/removed keys and closed sessions, clear-segment pass-through, and
+secure-session/decoder capability reporting.
 
-Full stream playback, key rotation, and protected-output policy tests remain
-planned until the target-specific demux, license, decoder, secure-buffer, and
-output-oracle integrations described below are available. L2 vector success
-must not be reported as L3 playback success.
+For licensed sample decryption, the test obtains and provides a license
+response, associates the DRM session with the crypto plugin, and submits the
+encrypted sample through `ICryptoPlugin.decrypt(DecryptArgs)` using AVBuffer
+handles. It validates the returned byte count and compares the output
+byte-for-byte with an independent plaintext fixture. Other cases exercise
+subsample/pattern handling, documented failures, and clear-only pass-through.
+The input is already demultiplexed; the tests do not parse a media container or
+submit samples to a decoder.
 
-The same procedures run as `VTS_L3_Drm` (ClearKey), `VTS_L3_DrmWidevine`
-and `VTS_L3_DrmPlayReady`. Each uses its exact configured UUID and independent
-fixtures. Enable `drm.schemes.<scheme>.l3` for a one-run matrix; legacy
-`drm.l3`/`DRM_L3_*` inputs remain supported without a matrix.
-The secure-session case additionally requires `secure_session.enabled: true`.
-Disabled and unsupported optional cases are skipped, not passed. Missing
-required capabilities and operational failures on advertised capabilities fail.
+These are sample-level HAL/crypto checks, not end-to-end playback conformance.
+The L3 test-suite label does not prove a specific DRM security level. The
+secure-session test checks reported capability only; it does not decrypt into
+protected buffers or verify display/output policy. See
+[vts_drm_l3_tests.cpp](../../src/vts_drm_l3_tests.cpp) for the implementation.
 
-Before loading sample fixtures, the tests open/bind a probe session and query
-DRM/Crypto secure-decoder requirements at the resolved security level. A
-protected-only path skips CPU-readable comparison and the non-secure decrypt
-negative case. Requirements are checked again after licensing. Such skips and
-the secure-session capability case do not validate protected decryption.
+## Crypto and functional coverage
 
-## Acronyms, Terms and Abbreviations
+| Case ID | Registered test name | Functional check | What a pass establishes |
+|---:|---|---|---|
+| 001 | `decryptSampleWithAvBuffer_pos` | Decrypt one configured sample through AIDL AVBuffers after acquiring and binding a key. | The crypto plugin accepts the configured KID, IV, mode, pattern, subsample, and buffers; reports the expected byte count; returns exactly the expected plaintext; and leaves the caller-owned source readable and unchanged. |
+| 002 | `removedKeysAndClosedSessionRejectDecrypt_neg` | Decrypt successfully as a baseline, remove keys and retry, then close the session and retry. | The baseline crypto path works; missing keys return `ERROR_DRM_NO_LICENSE`, and a closed session returns `ERROR_DRM_SESSION_NOT_OPENED`. |
+| 003 | `secureSessionAndDecoderRequirement_pos` | Open a session at the configured security level, query the session level, bind crypto, and query the secure-decoder requirement. | The reported session level matches the requested level and the configured codec requires a secure decoder. This validates capability reporting only. |
+| 004 | `decryptSubsamplesAndPattern_pos` | Decrypt using adjacent encrypted subsamples or the configured encryption pattern; for unpatterned AES-CTR, also decrypt a sample with a clear tail. | The returned byte count and output match the independent plaintext fixture for each tested subsample arrangement. |
+| 005 | `decryptBoundsAndInvalidInputsRejected_neg` | Submit undersized destinations, short sources, invalid handles, and an empty subsample list. | Invalid inputs return the corresponding documented errors, including `ERROR_DRM_FRAME_TOO_LARGE`, `ERROR_DRM_DECRYPT`, or `ERROR_DRM_ZERO_SUBSAMPLES`. |
+| 006 | `decryptClearSegmentWithAvBuffer_pos` | Submit deterministic clear-only data with `Mode::UNENCRYPTED` through AVBuffers. | The call reports the full size and preserves the bytes. This is API/buffer pass-through only; no key, ciphertext, or cryptographic transform is involved. |
+| 007 | `decryptWithoutKeysRejected_neg` | Bind a session without acquiring a key and attempt to decrypt the configured encrypted sample. | Decryption fails with `ERROR_DRM_NO_LICENSE`. |
 
-- `DRM` - Digital Rights Management
-- `KID` - Key Identifier
-- `PTS` - Presentation Time Stamp
-- `TEE` - Trusted Execution Environment
-- `HDCP` - High-bandwidth Digital Content Protection
-- `EOS` - End of Stream
+For cases 001, 002, 004, and 005, if the license or plugin requires protected
+output, the test skips CPU-readable buffer comparison and non-secure decrypt
+checks. A skip does not demonstrate protected decryption.
+
+## Configuration and prerequisites
+
+Enable the sample tests with `DRM_L3_ENABLE=1` (or
+`drm.l3.enabled: true`) and provide init data, encrypted sample, expected
+plaintext, KID, IV, and MIME type. Cases 001, 002, 004, and 005 also require an
+accepted license response, supplied locally or through the configured HTTP
+adapter; case 007 deliberately runs without a license. Configure matching mode
+and pattern values when using patterned encryption. AVBuffer cases also
+require the DRM, AVBuffer, and AVBufferHelper services.
+
+Enable case 003 separately with `DRM_L3_SECURE_SESSION_ENABLE=1` (or
+`drm.l3.secure_session.enabled: true`) and configure the required security
+level and MIME/codec values. If an optional capability is not advertised, the
+test may skip; a skip is not a pass.
+
+The full-playback prerequisites below are not part of the current seven test
+cases. End-to-end playback would additionally require:
+
+- Container demux and extraction of DRM metadata and encrypted subsamples.
+- Decoder routing, including secure-decoder selection where required.
+- Protected-buffer handling and output-policy verification.
+- An independent audio/video output oracle with defined tolerances and
+  timeouts.
 
 ## References
 
-- [High Level Test Specification](drm_High-Level_TestSpecification.md)
-- [L2 Low Level Test Specification](drm_L2_Low-Level_TestSpecification.md)
+- [High-Level Test Specification](drm_High-Level_TestSpecification.md)
+- [L2 Low-Level Test Specification](drm_L2_Low-Level_TestSpecification.md)
 - [DRM Test Streams](drm_TestStreams.md)
-- [Coverage matrix](drm_TestSpecification.md)
-
-## Test Configuration
-
-Before implementation, define a per-target playback configuration containing:
-
-| Input | Requirement |
-|---|---|
-| Stream | Authorized encrypted media, scheme UUID, container/codecs, duration, and expected DRM metadata/KIDs |
-| License | Disposable credentials and response handler/endpoint; expected request/response validation |
-| Crypto | Supported modes/patterns, AVBuffer allocation/import, protected-memory flag, and ownership rules |
-| Decoder | Audio/video decoder IDs, secure capability, routing, and output mode |
-| Output oracle | Reference frames/audio or target-approved observation method, explicit tolerances, duration and timeout limits |
-| Negative expectations | Exact error category, callback, and output restrictions for each failure |
-
-The current implemented sample and security-level inputs are listed in the
-[configuration template](../../drm_test_configuration/drm_test_config.yaml).
-Tests load these YAML fields at initialization; corresponding environment
-variables override them. See [Test Streams](drm_TestStreams.md) for the mapping,
-path rules, and runtime configuration behavior.
-
-## Full Playback Prerequisites
-
-- Passing relevant AVBuffer and decoder tests on the selected DUT.
-- Verified L2 `ICryptoPlugin.decrypt(DecryptArgs)` path and ownership contract.
-- Media demux/parser that exposes stream DRM metadata and encrypted subsamples.
-- A controlled license service or accepted scheme-specific test response.
-- Defined output measurements and timeouts; no pass based solely on API success.
-- For protected playback, real protected buffers/decoder/output-policy evidence.
-
-## L3 Tests
-
-### Test 1: AVBuffer-Backed Sample Decryption
-
-| Title | Details |
-|---|---|
-| Function Name | `decryptSampleWithAvBuffer_pos` |
-| Description | Acquire a key and compare AIDL AVBuffer decryption output with a known plaintext sample. |
-| Test Group | L3 : 03 |
-| Test Case ID | 001 |
-| Priority | High |
-
-**Pre-Conditions:** `DRM_L3_ENABLE=1` and all `l3.sample` fixture variables supplied.
-
-**Dependencies:** DRM, AVBuffer, and AVBufferHelper services.
-
-**User Interaction:** None once target output validation is defined.
-
-**Test Procedure:**
-
-| Variation / Steps | Description | Test Data | Expected Result | Notes |
-|---|---|---|---|---|
-| 01 | Open session and complete license exchange | Init data, HTTP endpoint or local response file | Request is created and response accepted | `drm.l3.license.mode` selects HTTP POST or file |
-| 02 | Submit the encrypted sample through AIDL AVBuffer decryption | KID, IV, mode, subsample, source and destination handles | Decrypt succeeds and reports the expected byte count | Non-secure test buffers |
-| 03 | Compare the output against the expected plaintext | Independent plaintext fixture | Bytes match exactly | Does not validate playback |
-| 04 | Release DRM and AVBuffer resources | Session and allocated handles | Resources are released | Cleanup also runs on failure |
-
-The key-removal/session-close negative case first verifies successful
-decryption, the exact byte count and full plaintext equality. Only then does
-it check failure after removing keys and closing the session, preventing an
-already-broken decrypt path from passing the negative test.
-
-### Test 2: Removed-Key and Closed-Session Rejection
-
-| Title | Details |
-|---|---|
-| Function Name | `removedKeysAndClosedSessionRejectDecrypt_neg` |
-| Description | Verify decryption is rejected after keys are removed and after the session closes. |
-| Test Group | L3 : 03 |
-| Test Case ID | 002 |
-| Priority | High |
-
-**Pre-Conditions:** `DRM_L3_ENABLE=1` and valid sample/license fixtures supplied.
-
-**Dependencies:** DRM, AVBuffer, and AVBufferHelper services.
-
-**User Interaction:** None.
-
-**Test Procedure:**
-
-| Variation / Steps | Description | Test Data | Expected Result | Notes |
-|---|---|---|---|---|
-| 01 | Acquire a key and prepare an encrypted sample | Valid sample and license response | Session and buffers are ready | Should Pass |
-| 02 | Remove keys and retry decryption | Active session and sample | Returns `ERROR_DRM_NO_LICENSE` | Negative case |
-| 03 | Close the DRM session and retry decryption | Closed session and sample | Returns `ERROR_DRM_SESSION_NOT_OPENED` | Stale-key use is rejected |
-| 04 | Release resources | Session and allocated handles | Resources are released | Should Pass |
-
-Key rotation, invalid-license responses, and playback output restrictions are
-not covered by this case.
-
-### Test 3: Secure-Session Capability Admission
-
-| Title | Details |
-|---|---|
-| Function Name | `secureSessionAndDecoderRequirement_pos` |
-| Description | Check that the configured DRM security level opens and the plugin requires a secure decoder for the configured MIME type. |
-| Test Group | L3 : 03 |
-| Test Case ID | 003 |
-| Priority | High |
-
-**Pre-Conditions:** `DRM_L3_ENABLE=1`, `DRM_L3_SECURE_SESSION_ENABLE=1`, and a required security level are configured.
-
-**Dependencies:** DRM factory with the configured security level.
-
-**User Interaction:** Target-specific output-policy setup may be required.
-
-**Test Procedure:**
-
-| Variation / Steps | Description | Test Data | Expected Result | Notes |
-|---|---|---|---|---|
-| 01 | Open a session at the configured security level | `DRM_L3_REQUIRED_SECURITY_LEVEL` | Session reports the requested level | Target-specific setting |
-| 02 | Query secure decoder requirement | `DRM_L3_MIME_TYPE` | Plugin reports that a secure decoder is required | Capability check only |
-| 03 | Close the DRM session | Session ID | Session closes successfully | Should Pass |
-
-This case does not create protected AVBuffers, route samples to a secure
-decoder, or validate output policy. Those remain target-specific work.
+- [Combined test overview](drm_TestSpecification.md)
+- [Configuration template](../../drm_test_configuration/drm_test_config.yaml)

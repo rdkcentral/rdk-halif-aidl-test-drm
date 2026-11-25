@@ -47,10 +47,6 @@ drm:
       init_data_file: ""
       encrypted_sample_file: ""
       expected_plaintext_file: ""
-      mode: "AES_CTR"
-      pattern:
-        encrypt_blocks: 0
-        skip_blocks: 0
       license_response_file: "" # Required in local mode except for generated ClearKey JSON.
       kid_hex: ""
       key_hex: ""
@@ -73,6 +69,9 @@ drm:
       iv_hex: ""
       mime_type: "video/mp4"
       mode: "AES_CTR"
+      pattern:
+        encrypt_blocks: 0
+        skip_blocks: 0
       codec_mime_type: "video/avc" # Actual sample codec; used for secure-decoder queries.
     secure_session:
       enabled: false

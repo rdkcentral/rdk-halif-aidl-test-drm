@@ -2,111 +2,64 @@
 
 ## Documentation
 
-- [High Level Test Specification](drm_High-Level_TestSpecification.md)
-- [L2 Low Level Test Specification](drm_L2_Low-Level_TestSpecification.md)
-- [L3 Low Level Test Specification](drm_L3_Low-Level_TestSpecification.md)
+- [High-Level Test Specification](drm_High-Level_TestSpecification.md)
+- [L2 Low-Level Test Specification](drm_L2_Low-Level_TestSpecification.md)
+- [L3 Low-Level Test Specification](drm_L3_Low-Level_TestSpecification.md)
 - [Test Streams and Vector Inputs](drm_TestStreams.md)
 
-## L2: license/key exchange and crypto data path (no playback)
+## L2: license/key exchange and legacy sample crypto
 
-The detailed procedures are in the
-[L2 Low Level Test Specification](drm_L2_Low-Level_TestSpecification.md).
-L2 must establish that a DRM scheme can acquire usable keys and decrypt known
-test vectors through the RDK AIDL crypto API. It does not play a media stream
-through a decoder. Tests are opt-in because fixtures and licenses are
-target/test-run inputs, not repository data.
+L2 checks DRM session and license operations, the legacy
+`IDrmPlugin.decrypt()` known-vector path, and documented errors. The test opens
+a session, requests and provides a license response, binds the session to the
+crypto plugin, and checks key status. The ClearKey-specific vector cases
+compare decrypted output byte-for-byte with independently prepared plaintext.
+L2 does not exercise AIDL AVBuffer decryption; those cases are in L3.
 
-1. Open a session.
-2. Load valid scheme-specific init data containing the test KID.
-3. Call `getKeyRequest(session, initData, mime, STREAMING, parameters)`.
-4. Acquire a test license response. With `drm.l2.license.mode: "http"`, POST the
-   plugin's key request to the configured URL/port. The default `local` mode
-   reads a response file, or generates JSON only for ClearKey from a disposable KID/key.
-5. Call `provideKeyResponse(session, response)`.
-6. Call `queryKeyStatus(session)` and verify a non-empty status result.
-7. Create a crypto plugin and bind it with `setMediaDrmSession(session)`.
-8. Use `ICryptoPlugin.decrypt(DecryptArgs)` with valid AVBuffer handles to
-   decrypt a known AES-CTR test vector and compare it with the known plaintext.
-9. Run the AIDL negative cases for empty subsamples, short source/destination
-   buffers, invalid handles, no-license after key removal, and use after
-   session closure. They assert `ERROR_DRM_ZERO_SUBSAMPLES`,
-   `ERROR_DRM_FRAME_TOO_LARGE`, `ERROR_DRM_DECRYPT`, `ERROR_DRM_NO_LICENSE`,
-   and `ERROR_DRM_SESSION_NOT_OPENED`, respectively.
-10. Existing session/request negatives also assert `BAD_VALUE` for an empty
-    response and ClearKey empty init data, and
-    `ERROR_DRM_SESSION_NOT_OPENED` for a closed-session key request.
+Passing L2 cases does not establish decoder integration or playback.
 
-The registered L2 AIDL cases check exact plaintext and returned byte count,
-multiple and mixed clear/encrypted subsamples, configured modes/patterns,
-buffer bounds, caller ownership/lifetime, and documented negative errors.
-The retained `decryptKnownSample_pos` and `removeKeysRejectsDecrypt_neg` cases
-continue to cover the legacy `IDrmPlugin.decrypt()` path for ClearKey only.
-AVBuffer sample tests are opt-in and require per-scheme ciphertext, plaintext,
-KID and IV fixtures; they are API/data-path tests, not decoder playback.
+L2 tests are opt-in. Set `drm.l2.enabled: true` or `DRM_L2_ENABLE=1` and
+provide the configured input fixtures. Local response files and the optional
+HTTP license adapter are described in
+[Test Streams and Vector Inputs](drm_TestStreams.md). Optional capabilities
+and missing optional fixtures may cause a skip; a skip is not a pass.
 
-Set YAML `drm.l2.enabled: true` (or `DRM_L2_ENABLE=1`) and provide the vector inputs documented
-in [Test Streams and Vector Inputs](drm_TestStreams.md) to execute these cases.
-Disabled and unsupported optional cases are explicitly skipped, not passed.
+See the [L2 Low-Level Test Specification](drm_L2_Low-Level_TestSpecification.md)
+for the registered case-by-case behavior and expected results.
 
-L2 and L3 support configurable HTTP license exchange; see
-[HTTP license transport](drm_TestStreams.md#http-license-transport).
-The same common cases are registered for ClearKey, Widevine and PlayReady.
-Use `drm.schemes.<scheme>` profiles for a one-run matrix with separate service,
-UUID, MIME/security level, license and sample inputs; see
-[multi-scheme setup](../../README.md#one-run-clearkey-widevine-and-playready-testing).
-An absent optional service/UUID or unsupported MIME/security level skips; a
-required one fails. Operational errors on advertised capabilities always fail.
-Vendor license authentication/wrapping needs an external approved adapter;
-the device must already be provisioned.
+## L3: AVBuffer sample crypto and secure-session capability checks
 
-## L3: sample crypto coverage and end-to-end playback
+The current L3 group contains seven functional checks:
 
-The opt-in `VTS_L3_Drm` (ClearKey), `VTS_L3_DrmWidevine` and
-`VTS_L3_DrmPlayReady` groups share three bounded cases:
+| Case ID | Test | What it verifies |
+|---:|---|---|
+| 001 | Decrypt a configured sample using AIDL AVBuffers. | The crypto plugin returns the expected byte count and exact plaintext while preserving the caller-owned source buffer. |
+| 002 | Retry AVBuffer decryption after removing keys and closing the session. | The valid baseline works; the invalid states return `ERROR_DRM_NO_LICENSE` and `ERROR_DRM_SESSION_NOT_OPENED`. |
+| 003 | Check the configured session security level and secure-decoder requirement. | The session reports the requested level and the plugin reports that the configured codec requires a secure decoder. This is capability reporting only. |
+| 004 | Exercise encrypted subsamples, optional encryption patterns, and clear-tail subsamples for unpatterned AES-CTR. | Every successful output matches the independent plaintext fixture. |
+| 005 | Submit undersized buffers, short source data, invalid handles, and no subsamples. | The plugin returns documented bounds and invalid-input errors. |
+| 006 | Submit deterministic clear-only data in `UNENCRYPTED` mode through AVBuffers. | The output matches the input; this is pass-through only and performs no cryptographic transform. |
+| 007 | Attempt encrypted AVBuffer decryption without acquiring a key. | Decryption fails with `ERROR_DRM_NO_LICENSE`. |
 
-| Test | Current validation |
-|---|---|
-| `decryptSampleWithAvBuffer_pos` | Acquire a key, decrypt a configured sample using `ICryptoPlugin.decrypt(DecryptArgs)` with AVBuffer handles, and compare the bytes with an independent plaintext |
-| `removedKeysAndClosedSessionRejectDecrypt_neg` | Confirm decryption fails after key removal and after session closure |
-| `secureSessionAndDecoderRequirement_pos` | Optionally check a configured session security level and secure-decoder requirement |
+These tests do not parse a media container, process key rotation, send data to
+a decoder, or validate playback or protected output. If only protected output
+is allowed, CPU-readable sample checks may skip; that skip does not demonstrate
+protected decryption.
 
-These checks do not parse a media container, process KID rotation, feed a
-decoder, or validate playback or protected output. They are useful integration
-checks but are not end-to-end L3 playback conformance.
-Secure-decoder-only paths skip the non-secure byte-comparison cases; a skip
-does not validate decryption into protected buffers.
-
-The full playback flow remains planned:
+Full playback coverage remains separate and requires:
 
 ```text
-encrypted stream with DRM metadata
-  -> detect DRM scheme and extract init data
-  -> IDrmPlugin session and license/key exchange
-  -> ICryptoPlugin.setMediaDrmSession
-  -> AVBuffer decrypt and decoder input
-  -> playback/frame and output-policy verification
+encrypted stream and DRM metadata
+  -> demux and extract init data/subsamples
+  -> DRM session and license/key exchange
+  -> bind session to crypto plugin
+  -> AVBuffer decryption and decoder input
+  -> playback and output-policy verification
 ```
 
-Full L3 will reuse validated crypto handling in actual playback and verify
-stream demux/DRM metadata, decoder selection and acceptance, resolution
-notification, playback output, cleanup, and protected output where claimed.
-Widevine L1 secure-path coverage additionally requires the OEMCrypto/TEE,
-protected memory, secure decoder, display policy, and HDCP setup; it is not a
-ClearKey substitute.
+End-to-end validation must verify demux, decoder selection and acceptance,
+playback output, cleanup, and protected output when claimed. A passing sample
+decrypt case is not a substitute.
 
-## prerequisites
-
-- Provide each selected scheme's init data and accepted test license flow;
-  for AVBuffer comparison, also provide its KID, IV, encrypted sample and plaintext.
-- A raw disposable key is needed only for local ClearKey JSON generation.
-- Provide the AVBuffer and AVBufferHelper services required by L2 AIDL decrypt
-  tests; the tests allocate and release their own buffers.
-- Provide an encrypted stream and playback/output validation method for
-  end-to-end L3; the current sample test is not a substitute.
-- Execute the synchronized component on a DUT, either through the standalone
-  UT-Core binary or the opt-in unified integration.
-- Preserve exact documented service-specific error assertions when adding
-  negative cases; do not treat any failure as an equivalent success.
-
-See the [High Level Test Specification](drm_High-Level_TestSpecification.md)
-for the implementation status and L2/L3 requirements.
+See the [L3 Low-Level Test Specification](drm_L3_Low-Level_TestSpecification.md)
+for prerequisites, configuration, and expected results.
