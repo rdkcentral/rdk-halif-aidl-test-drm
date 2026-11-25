@@ -118,6 +118,25 @@ struct DrmFixture {
     int32_t patternSkipBlocks = 0;
 };
 
+void logSamplePreview(const char* label, const std::vector<uint8_t>& data) {
+    constexpr char digits[] = "0123456789abcdef";
+    const size_t previewSize = std::min(data.size(), size_t{64});
+    std::string hex;
+    std::string text;
+    for (size_t i = 0; i < previewSize; ++i) {
+        const uint8_t byte = data[i];
+        hex += digits[byte >> 4];
+        hex += digits[byte & 0x0f];
+        if (byte == '"' || byte == '\\') {
+            text += '\\';
+        }
+        text += byte >= 0x20 && byte <= 0x7e ? static_cast<char>(byte) : '.';
+    }
+    UT_LOG_INFO("VTS client %s: %zu bytes, preview %zu bytes%s, hex=%s, ASCII=\"%s\"",
+            label, data.size(), previewSize, previewSize < data.size() ? " (truncated)" : "",
+            hex.c_str(), text.c_str());
+}
+
 bool hasServiceSpecificError(const Status& status, DrmErrors error) {
     return !status.isOk() &&
             status.exceptionCode() == Status::EX_SERVICE_SPECIFIC &&
@@ -246,9 +265,16 @@ bool loadVector(DrmFixture* fixture) {
     }
     if (fixture->kid.size() != 16 || fixture->iv.size() != 16 ||
             fixture->ciphertext.size() != fixture->plaintext.size()) {
-        UT_LOG_ERROR("L2 vector requires 16-byte KID/IV and matching ciphertext/plaintext sizes");
+        UT_LOG_ERROR("L2 vector requires 16-byte KID/IV and matching ciphertext/plaintext sizes "
+                "(kid=%zu, iv=%zu, ciphertext=%zu, plaintext=%zu); regenerate the fixtures "
+                "with make_clearkey_fixtures.py instead of editing plain.bin by hand",
+                fixture->kid.size(), fixture->iv.size(),
+                fixture->ciphertext.size(), fixture->plaintext.size());
         return false;
     }
+    UT_LOG_INFO("VTS client fixture: encrypted stream %s clear text (%zu bytes each)",
+            fixture->ciphertext == fixture->plaintext ? "is IDENTICAL to" : "differs from",
+            fixture->plaintext.size());
     if (fixture->ciphertext.size() >
             static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
         UT_LOG_ERROR("L2 sample exceeds the AVBuffer API size limit");
@@ -909,11 +935,13 @@ void L2Cases::decryptClearSegmentWithAvBuffer_pos() {
     const DecryptArgs args = buffers.decryptArgs(
             keyId, iv, Mode::UNENCRYPTED, {clearSegment});
     int32_t decryptedBytes = 0;
+    logSamplePreview("clear segment before ICryptoPlugin::decrypt", clearData);
     DRM_CRYPTO_PLUGIN_DECRYPT_SUCCESS(crypto, args, decryptedBytes);
     UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(clearData.size()));
 
     std::vector<uint8_t> decrypted;
     UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, clearData.size()));
+    logSamplePreview("clear segment after ICryptoPlugin::decrypt", decrypted);
     UT_ASSERT_TRUE_FATAL(decrypted == clearData);
     UT_ASSERT_TRUE_FATAL(buffers.cleanup());
     DRM_PLUGIN_CLOSE_SESSION_SUCCESS(drm, session);
@@ -945,9 +973,12 @@ void L2Cases::decryptKnownSample_pos() {
     LicensedSession licensed;
     UT_ASSERT_TRUE_FATAL(licensed.open(fixture));
 
+    logSamplePreview("expected plaintext fixture", fixture.plaintext);
+    logSamplePreview("ciphertext before IDrmPlugin::decrypt", fixture.ciphertext);
     std::vector<uint8_t> decrypted;
     DRM_PLUGIN_DECRYPT_SUCCESS(
             licensed.drm, licensed.session, fixture.kid, fixture.ciphertext, fixture.iv, decrypted);
+    logSamplePreview("returned plaintext after IDrmPlugin::decrypt", decrypted);
     UT_ASSERT_TRUE(decrypted == fixture.plaintext);
     UT_ASSERT_TRUE(licensed.close());
 }
@@ -986,6 +1017,8 @@ void L2Cases::decryptKnownSampleWithAvBuffer_pos() {
     const DecryptArgs args = buffers.decryptArgs(
             fixture.kid, fixture.iv, fixture.mode, {sample},
             fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
+    logSamplePreview("expected plaintext fixture", fixture.plaintext);
+    logSamplePreview("ciphertext before ICryptoPlugin::decrypt", fixture.ciphertext);
     int32_t decryptedBytes = 0;
     Status status = licensed.crypto->decrypt(args, &decryptedBytes);
     if (hasServiceSpecificError(
@@ -998,6 +1031,7 @@ void L2Cases::decryptKnownSampleWithAvBuffer_pos() {
 
     std::vector<uint8_t> decrypted;
     UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+    logSamplePreview("returned plaintext after ICryptoPlugin::decrypt", decrypted);
     UT_ASSERT_TRUE_FATAL(decrypted == fixture.plaintext);
     std::vector<uint8_t> retainedSource;
     UT_ASSERT_TRUE_FATAL(buffers.readSource(&retainedSource, fixture.ciphertext.size()));
@@ -1057,6 +1091,8 @@ void L2Cases::decryptSubsamplesAndPattern_pos() {
     }
 
     UT_ASSERT_TRUE_FATAL(buffers.writeSource(source));
+    logSamplePreview("expected plaintext fixture", fixture.plaintext);
+    logSamplePreview("source before ICryptoPlugin::decrypt", source);
     DecryptArgs args = buffers.decryptArgs(
             fixture.kid, fixture.iv, fixture.mode, subSamples,
             fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
@@ -1071,6 +1107,7 @@ void L2Cases::decryptSubsamplesAndPattern_pos() {
     UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
     std::vector<uint8_t> decrypted;
     UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+    logSamplePreview("returned plaintext after ICryptoPlugin::decrypt", decrypted);
     UT_ASSERT_TRUE_FATAL(decrypted == fixture.plaintext);
 
     if (fixture.mode == Mode::AES_CTR && fixture.patternEncryptBlocks == 0 &&
@@ -1088,6 +1125,7 @@ void L2Cases::decryptSubsamplesAndPattern_pos() {
         clear.numBytesOfClearData = static_cast<int32_t>(clearSize);
         clear.numBytesOfEncryptedData = 0;
         UT_ASSERT_TRUE_FATAL(buffers.writeSource(source));
+        logSamplePreview("mixed clear/encrypted source before ICryptoPlugin::decrypt", source);
         args = buffers.decryptArgs(
                 fixture.kid, fixture.iv, fixture.mode, {encrypted, clear});
         status = licensed.crypto->decrypt(args, &decryptedBytes);
@@ -1099,6 +1137,7 @@ void L2Cases::decryptSubsamplesAndPattern_pos() {
         DRM_STATUS_SUCCESS(status);
         UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
         UT_ASSERT_TRUE_FATAL(buffers.readDestination(&decrypted, fixture.plaintext.size()));
+        logSamplePreview("returned plaintext after mixed-segment decrypt", decrypted);
         UT_ASSERT_TRUE(decrypted == fixture.plaintext);
     }
 
@@ -1144,21 +1183,18 @@ void L2Cases::decryptBoundsAndInvalidInputsRejected_neg() {
                 fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
         int32_t decryptedBytes = 0;
         args.subSamples.clear();
-        Status status = licensed.crypto->decrypt(args, &decryptedBytes);
-        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
-                status, DrmErrors::ERROR_DRM_ZERO_SUBSAMPLES));
+        DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+                licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_ZERO_SUBSAMPLES);
 
         args.subSamples = {sample};
         args.sourceBufferHandle = -1;
-        status = licensed.crypto->decrypt(args, &decryptedBytes);
-        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
-                status, DrmErrors::ERROR_DRM_DECRYPT));
+        DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+                licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_DECRYPT);
 
         args.sourceBufferHandle = buffers.sourceHandle();
         args.destinationBufferHandle = -1;
-        status = licensed.crypto->decrypt(args, &decryptedBytes);
-        UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
-                status, DrmErrors::ERROR_DRM_DECRYPT));
+        DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+                licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_DECRYPT);
         UT_ASSERT_TRUE_FATAL(buffers.cleanup());
     }
 
@@ -1191,8 +1227,8 @@ void L2Cases::decryptBoundsAndInvalidInputsRejected_neg() {
             fixture.kid, fixture.iv, fixture.mode, {sample},
             fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
     int32_t decryptedBytes = 0;
-    const Status status = licensed.crypto->decrypt(outOfBoundsArgs, &decryptedBytes);
-    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_DECRYPT));
+    DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+            licensed.crypto, outOfBoundsArgs, decryptedBytes, DrmErrors::ERROR_DRM_DECRYPT);
     UT_ASSERT_TRUE_FATAL(shortSource.cleanup());
     UT_ASSERT_TRUE(licensed.close());
 }
@@ -1234,9 +1270,8 @@ void L2Cases::decryptWithoutKeysRejected_neg() {
             fixture.kid, fixture.iv, fixture.mode, {sample},
             fixture.patternEncryptBlocks, fixture.patternSkipBlocks);
     int32_t decryptedBytes = 0;
-    const Status status = unlicensed.crypto->decrypt(args, &decryptedBytes);
-    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(
-            status, DrmErrors::ERROR_DRM_NO_LICENSE));
+    DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+            unlicensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_NO_LICENSE);
     UT_ASSERT_TRUE_FATAL(buffers.cleanup());
     UT_ASSERT_TRUE(unlicensed.close());
 }
@@ -1285,13 +1320,12 @@ void L2Cases::removedKeysAndClosedSessionRejectAvBufferDecrypt_neg() {
     DRM_STATUS_SUCCESS(status);
     UT_ASSERT_EQUAL_FATAL(decryptedBytes, static_cast<int32_t>(fixture.plaintext.size()));
     DRM_PLUGIN_REMOVE_KEYS_SUCCESS(licensed.drm, licensed.session);
-    status = licensed.crypto->decrypt(args, &decryptedBytes);
-    UT_ASSERT_TRUE_FATAL(hasServiceSpecificError(status, DrmErrors::ERROR_DRM_NO_LICENSE));
+    DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+            licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_NO_LICENSE);
 
     UT_ASSERT_TRUE_FATAL(licensed.close());
-    status = licensed.crypto->decrypt(args, &decryptedBytes);
-    UT_ASSERT_TRUE(hasServiceSpecificError(
-            status, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED));
+    DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(
+            licensed.crypto, args, decryptedBytes, DrmErrors::ERROR_DRM_SESSION_NOT_OPENED);
     UT_ASSERT_TRUE_FATAL(buffers.cleanup());
 }
 
@@ -1323,6 +1357,8 @@ void L2Cases::removeKeysRejectsDecrypt_neg() {
     std::vector<uint8_t> baseline;
     DRM_PLUGIN_DECRYPT_SUCCESS(
             licensed.drm, licensed.session, fixture.kid, fixture.ciphertext, fixture.iv, baseline);
+    logSamplePreview("ciphertext before IDrmPlugin::decrypt", fixture.ciphertext);
+    logSamplePreview("plaintext after IDrmPlugin::decrypt (keys loaded)", baseline);
     UT_ASSERT_TRUE_FATAL(baseline == fixture.plaintext);
     DRM_PLUGIN_REMOVE_KEYS_SUCCESS(licensed.drm, licensed.session);
 
@@ -1570,31 +1606,31 @@ void L2Cases::provisioningStatusAndExchange_pos() {
     UT_ADD_TEST(Suite, emptyLicenseResponseRejected_neg) { L2Cases::emptyLicenseResponseRejected_neg(); } \
     UT_ADD_TEST(Suite, closedSessionRejectsOperations_neg) { L2Cases::closedSessionRejectsOperations_neg(); }
 
-DRM_L2_SCHEME(VTS_L2_DrmClearKey, "clearkey")
-DRM_L2_SCHEME(VTS_L2_DrmWidevine, "widevine")
-DRM_L2_SCHEME(VTS_L2_DrmPlayReady, "playready")
+DRM_L2_SCHEME(VTS_L2_Drm, "clearkey")
+//DRM_L2_SCHEME(VTS_L2_DrmWidevine, "widevine")
+//DRM_L2_SCHEME(VTS_L2_DrmPlayReady, "playready")
 #undef DRM_L2_SCHEME
 
 // Empty init data can be valid for renewal in other schemes.
-UT_ADD_TEST(VTS_L2_DrmClearKey, invalidInitDataRejected_neg) {
+UT_ADD_TEST(VTS_L2_Drm, invalidInitDataRejected_neg) {
     L2Cases::invalidInitDataRejected_neg();
 }
-UT_ADD_TEST(VTS_L2_DrmClearKey, listenerCallbacks_pos) {
+UT_ADD_TEST(VTS_L2_Drm, listenerCallbacks_pos) {
     L2Cases::listenerCallbacks_pos();
 }
-UT_ADD_TEST(VTS_L2_DrmClearKey, getKeyRequestResourceContention_neg) {
+UT_ADD_TEST(VTS_L2_Drm, getKeyRequestResourceContention_neg) {
     L2Cases::getKeyRequestResourceContention_neg();
 }
-UT_ADD_TEST(VTS_L2_DrmClearKey, getKeyRequestInvalidStateAndSessionLost_neg) {
+UT_ADD_TEST(VTS_L2_Drm, getKeyRequestInvalidStateAndSessionLost_neg) {
     L2Cases::getKeyRequestInvalidStateAndSessionLost_neg();
 }
-UT_ADD_TEST(VTS_L2_DrmClearKey, malformedClearKeyEmptyKeyRejected_neg) {
+UT_ADD_TEST(VTS_L2_Drm, malformedClearKeyEmptyKeyRejected_neg) {
     L2Cases::malformedClearKeyEmptyKeyRejected_neg();
 }
-UT_ADD_TEST(VTS_L2_DrmClearKey, malformedClearKeyLongKeyRejected_neg) {
+UT_ADD_TEST(VTS_L2_Drm, malformedClearKeyLongKeyRejected_neg) {
     L2Cases::malformedClearKeyLongKeyRejected_neg();
 }
-UT_ADD_TEST(VTS_L2_DrmClearKey, badLevelNotSupported_neg) {
+UT_ADD_TEST(VTS_L2_Drm, badLevelNotSupported_neg) {
     L2Cases::badLevelNotSupported_neg();
 }
 

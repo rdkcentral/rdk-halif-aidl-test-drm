@@ -31,6 +31,11 @@ public:
     Err keyCount(const Bytes& sessionId, size_t* count);
     Err findKey(const Bytes& sessionId, const Bytes& keyId, Bytes* key);
 
+    // Offline (persistent) licenses are kept in memory for the life of the process.
+    Err storeOfflineKeys(const std::vector<KeyEntry>& keys, Bytes* keySetId);
+    Err offlineKeyIds(const Bytes& keySetId, std::vector<Bytes>* keyIds);
+    Err releaseOfflineKeys(const Bytes& keySetId);
+
     Err setCipherAlgorithm(const Bytes& sessionId, const std::string& algorithm);
     Err setMacAlgorithm(const Bytes& sessionId, const std::string& algorithm);
     Err setPlaybackId(const Bytes& sessionId, const std::string& playbackId);
@@ -49,6 +54,7 @@ private:
 
     std::mutex mMutex;
     std::map<Bytes, Session> mSessions;
+    std::map<Bytes, std::vector<KeyEntry>> mOfflineLicenses;
 };
 
 }  // namespace rdk::clearkey

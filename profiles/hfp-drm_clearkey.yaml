@@ -1,0 +1,10 @@
+drm:
+  SupportedCryptoSchemes:
+    uuids:
+      - "e2719d58-a985-b3c9-781a-b030af78d30e"
+      - "1077efec-c0b2-4d02-ace3-3c1e52e2fb4b"
+    supportedContainerMimeTypes:
+      - video/mp4
+      - audio/mp4
+      - video/webm
+      - audio/webm

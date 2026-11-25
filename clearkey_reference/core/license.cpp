@@ -116,19 +116,31 @@ Err parseInitData(const Bytes& initData, const std::string& mimeType,
     return Err::CannotHandle;
 }
 
-std::string buildLicenseRequest(const std::vector<Bytes>& keyIds) {
-    std::string request = "{\"kids\":[";
+namespace {
+
+std::string kidList(const std::vector<Bytes>& keyIds) {
+    std::string list = "[";
     for (size_t i = 0; i < keyIds.size(); ++i) {
         if (i != 0) {
-            request += ",";
+            list += ",";
         }
-        request += "\"" + base64UrlEncode(keyIds[i].data(), keyIds[i].size()) + "\"";
+        list += "\"" + base64UrlEncode(keyIds[i].data(), keyIds[i].size()) + "\"";
     }
-    request += "],\"type\":\"temporary\"}";
-    return request;
+    return list + "]";
 }
 
-Err parseLicenseResponse(const Bytes& response, std::vector<KeyEntry>* keys) {
+}  // namespace
+
+std::string buildLicenseReleaseRequest(const std::vector<Bytes>& keyIds) {
+    return "{\"kids\":" + kidList(keyIds) + ",\"type\":\"persistent-release-message\"}";
+}
+
+std::string buildLicenseRequest(const std::vector<Bytes>& keyIds, bool persistent) {
+    return "{\"kids\":" + kidList(keyIds) + ",\"type\":\"" +
+            (persistent ? "persistent-license" : "temporary") + "\"}";
+}
+
+Err parseLicenseResponse(const Bytes& response, std::vector<KeyEntry>* keys, bool* persistent) {
     keys->clear();
     JsonValue root;
     if (!parseJson(std::string(response.begin(), response.end()), &root)) {
@@ -139,10 +151,18 @@ Err parseLicenseResponse(const Bytes& response, std::vector<KeyEntry>* keys) {
         return Err::LicenseParse;
     }
     const JsonValue* type = root.find("type");
-    if (type != nullptr &&
-            (type->type != JsonValue::Type::String || type->string != "temporary")) {
-        // Persistent licenses need storage that this reference plugin does not provide.
-        return Err::CannotHandle;
+    bool isPersistent = false;
+    if (type != nullptr) {
+        if (type->type != JsonValue::Type::String) {
+            return Err::CannotHandle;
+        }
+        isPersistent = type->string == "persistent-license";
+        if (type->string != "temporary" && !(isPersistent && persistent != nullptr)) {
+            return Err::CannotHandle;
+        }
+    }
+    if (persistent != nullptr) {
+        *persistent = isPersistent;
     }
     for (const JsonValue& entry : list->array) {
         const JsonValue* kty = entry.find("kty");

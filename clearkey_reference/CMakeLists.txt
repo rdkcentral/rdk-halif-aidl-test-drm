@@ -34,7 +34,7 @@ target_link_libraries(clearkey_core_test PRIVATE clearkey_core)
 add_test(NAME clearkey_core COMMAND clearkey_core_test)
 
 # The Binder service needs the platform Binder SDK, the generated DRM AIDL C++
-# code and the AVBuffer helper (or a link-time placeholder), so it is opt-in:
+# code and the AVBuffer helper (or a build-only placeholder), so it is opt-in:
 #
 #   cmake -DCLEARKEY_BUILD_SERVICE=ON \
 #         -DBINDER_INCLUDE_DIR=<dir containing binder/, utils/, ...> \
@@ -56,6 +56,9 @@ if(CLEARKEY_BUILD_SERVICE)
             message(FATAL_ERROR "CLEARKEY_BUILD_SERVICE requires -D${required}=...")
         endif()
     endforeach()
+    if(NOT CLEARKEY_BUILD_HELPER_SKELETON AND NOT EXISTS "${AVBUFFERHELPER_LIBRARY}")
+        message(FATAL_ERROR "Platform AVBuffer helper library not found: ${AVBUFFERHELPER_LIBRARY}")
+    endif()
     if(EXISTS "${AVBUFFERHELPER_INCLUDE_DIR}/avbufferhelper.h")
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/helper_include")
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/helper_include/IAVBufferHelper.h"
@@ -102,7 +105,6 @@ if(CLEARKEY_BUILD_SERVICE)
         target_include_directories(avbufferhelper PRIVATE
             ${AVBUFFERHELPER_COMPAT_INCLUDE} ${AVBUFFERHELPER_INCLUDE_DIR})
         target_link_libraries(clearkey_service PRIVATE clearkey_binder avbufferhelper)
-        install(TARGETS avbufferhelper LIBRARY DESTINATION lib)
     else()
         target_link_libraries(clearkey_service PRIVATE clearkey_binder ${AVBUFFERHELPER_LIBRARY})
     endif()

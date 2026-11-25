@@ -598,6 +598,9 @@ private:
         UT_ASSERT_EQUAL_FATAL(drmStatus.exceptionCode(), Status::EX_NONE); \
     } while (0)
 
+#define DRM_CRYPTO_PLUGIN_DECRYPT_FAILURE(cryptoPlugin, args, decryptedBytes, expectedError) \
+    DRM_CALL_FAILURE((cryptoPlugin)->decrypt((args), &(decryptedBytes)), expectedError)
+
 #endif
 
 /** @} */ // End of DRM_HALTEST_HEADER

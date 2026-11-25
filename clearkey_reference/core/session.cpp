@@ -58,6 +58,37 @@ Err SessionLibrary::addKeys(const Bytes& sessionId, const std::vector<KeyEntry>&
     return Err::Ok;
 }
 
+Err SessionLibrary::storeOfflineKeys(const std::vector<KeyEntry>& keys, Bytes* keySetId) {
+    std::lock_guard<std::mutex> lock(mMutex);
+    Bytes id(16);
+    do {
+        if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {
+            return Err::InvalidState;
+        }
+    } while (mOfflineLicenses.count(id) != 0);
+    mOfflineLicenses.emplace(id, keys);
+    *keySetId = id;
+    return Err::Ok;
+}
+
+Err SessionLibrary::offlineKeyIds(const Bytes& keySetId, std::vector<Bytes>* keyIds) {
+    std::lock_guard<std::mutex> lock(mMutex);
+    const auto it = mOfflineLicenses.find(keySetId);
+    if (it == mOfflineLicenses.end()) {
+        return Err::LicenseRelease;
+    }
+    keyIds->clear();
+    for (const KeyEntry& entry : it->second) {
+        keyIds->push_back(entry.kid);
+    }
+    return Err::Ok;
+}
+
+Err SessionLibrary::releaseOfflineKeys(const Bytes& keySetId) {
+    std::lock_guard<std::mutex> lock(mMutex);
+    return mOfflineLicenses.erase(keySetId) == 0 ? Err::LicenseRelease : Err::Ok;
+}
+
 Err SessionLibrary::removeKeys(const Bytes& sessionId) {
     std::lock_guard<std::mutex> lock(mMutex);
     Session* session = find(sessionId);

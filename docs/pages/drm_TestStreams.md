@@ -90,6 +90,14 @@ the default is an unpatterned AES-CTR sample. The separate legacy
 `IDrmPlugin.decrypt()` case remains ClearKey-only and does not prove AIDL
 AVBuffer behavior.
 
+Both known-sample decrypt cases log VTS-client previews of the expected
+plaintext, input ciphertext and returned plaintext. Each preview includes the
+total byte count, hex and printable ASCII for at most 64 bytes; non-printable
+bytes appear as `.` and longer samples are marked truncated. These are fixture
+data previews, not key or license dumps. Use disposable test content.
+Encryption happens when generating the fixture; the test sends ciphertext to
+the DRM service and compares the returned plaintext with the reference file.
+
 The [configuration template](../../drm_test_configuration/drm_test_config.yaml)
 contains the runtime input fields. Its legacy L1 settings and
 `required_instances`/`optional_instances` lists remain descriptive; use

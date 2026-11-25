@@ -129,6 +129,9 @@ void testLicense() {
             "{\"keys\":[{\"kty\":\"oct\",\"kid\":\"AAECAwQFBgcICQoLDA0ODw\","
             "\"k\":\"AAECAwQFBgcICQoLDA0ODw\"}],\"type\":\"persistent-license\"}";
     CHECK(parseLicenseResponse(Bytes(persistent.begin(), persistent.end()), &keys) == Err::CannotHandle);
+    bool isPersistent = false;
+    CHECK(parseLicenseResponse(Bytes(persistent.begin(), persistent.end()), &keys, &isPersistent) == Err::Ok);
+    CHECK(isPersistent && keys.size() == 1);
 }
 
 void testDecryptSample() {

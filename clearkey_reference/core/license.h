@@ -36,10 +36,16 @@ Err parseInitData(const Bytes& initData, const std::string& mimeType,
         std::vector<Bytes>* keyIds);
 
 // Builds the W3C ClearKey license request: {"kids":["..."],"type":"temporary"}
-std::string buildLicenseRequest(const std::vector<Bytes>& keyIds);
+// or "persistent-license" for offline requests.
+std::string buildLicenseRequest(const std::vector<Bytes>& keyIds, bool persistent = false);
 
-// Parses a W3C ClearKey license response (JSON Web Key set).
-Err parseLicenseResponse(const Bytes& response, std::vector<KeyEntry>* keys);
+// Builds the W3C ClearKey license release message for persistent licenses.
+std::string buildLicenseReleaseRequest(const std::vector<Bytes>& keyIds);
+
+// Parses a W3C ClearKey license response (JSON Web Key set). Persistent licenses are
+// rejected with CannotHandle unless persistent is non-null; it then reports the type.
+Err parseLicenseResponse(const Bytes& response, std::vector<KeyEntry>* keys,
+        bool* persistent = nullptr);
 
 }  // namespace rdk::clearkey
 

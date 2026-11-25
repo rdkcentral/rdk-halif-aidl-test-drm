@@ -236,8 +236,10 @@ int main() {
             KeyType::STREAMING, {}, &request), DrmErrors::ERROR_DRM_INIT_DATA));
     CHECK(drm->getKeyRequest(session, psshV1(uuid, kid), "video/mp4",
             KeyType::STREAMING, {}, &request).isOk() && !request.request.empty());
-    CHECK(isSpecific(drm->getKeyRequest(session, psshV1(uuid, kid), "video/mp4",
-            KeyType::OFFLINE, {}, &request), DrmErrors::ERROR_DRM_CANNOT_HANDLE));
+    CHECK(drm->getKeyRequest(session, psshV1(uuid, kid), "video/mp4",
+            KeyType::OFFLINE, {}, &request).isOk());
+    CHECK(std::string(request.request.begin(), request.request.end()).find(
+            "persistent-license") != std::string::npos);
     com::rdk::hal::drm::ProvisionRequest provisionRequest;
     CHECK(isSpecific(drm->getProvisionRequest("X.509", "", &provisionRequest),
             DrmErrors::ERROR_DRM_CANNOT_HANDLE));
@@ -281,6 +283,25 @@ int main() {
     CHECK(listener->eventType == com::rdk::hal::drm::EventType::VENDOR_DEFINED);
     CHECK(listener->eventSession == session && listener->eventData == session);
     CHECK(listener->expirationSession == session && listener->expiryTimeInMs == 100);
+    CHECK(keySetId.keySetId.empty());
+
+    // OFFLINE license: persistent response returns a key set ID, RELEASE removes it.
+    std::string offline = licenseJson(kid, key);
+    offline.replace(offline.find("temporary"), 9, "persistent-license");
+    com::rdk::hal::drm::KeySetId offlineSet;
+    CHECK(drm->provideKeyResponse(session, Bytes(offline.begin(), offline.end()), &offlineSet).isOk());
+    CHECK(!offlineSet.keySetId.empty());
+    CHECK(drm->getKeyRequest(offlineSet.keySetId, {}, "video/mp4",
+            KeyType::RELEASE, {}, &request).isOk());
+    CHECK(request.requestType == com::rdk::hal::drm::KeyRequestType::RELEASE);
+    CHECK(isBadValue(drm->getKeyRequest(offlineSet.keySetId, psshV1(uuid, kid), "video/mp4",
+            KeyType::RELEASE, {}, &request)));
+    const std::string releaseResponse = "{\"kids\":[],\"type\":\"license-release\"}";
+    com::rdk::hal::drm::KeySetId releaseSet;
+    CHECK(drm->provideKeyResponse(offlineSet.keySetId,
+            Bytes(releaseResponse.begin(), releaseResponse.end()), &releaseSet).isOk());
+    CHECK(isSpecific(drm->getKeyRequest(offlineSet.keySetId, {}, "video/mp4",
+            KeyType::RELEASE, {}, &request), DrmErrors::ERROR_DRM_LICENSE_RELEASE));
 
     std::vector<com::rdk::hal::drm::KeyValue> keyStatus;
     CHECK(drm->queryKeyStatus(session, &keyStatus).isOk() && !keyStatus.empty());

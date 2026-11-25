@@ -83,7 +83,7 @@ std::string ClearKeyDrmPlugin::takeTestError() {
     if (scope.empty() || mimeType.size() == 0) {
         return toStatus(Err::BadValue);
     }
-    if (!sessions().contains(scope)) {
+    if (keyType != KeyType::RELEASE && !sessions().contains(scope)) {
         return toStatus(Err::SessionNotOpened);
     }
     const std::string testError = takeTestError();
@@ -100,18 +100,29 @@ std::string ClearKeyDrmPlugin::takeTestError() {
     if (testError == "notProvisioned") {
         return toStatus(Err::NotProvisioned);
     }
-    if (keyType != KeyType::STREAMING) {
-        // Offline and release requests need persistent license storage.
-        return toStatus(Err::CannotHandle);
-    }
     std::vector<Bytes> keyIds;
-    const Err err = parseInitData(initData, mimeType, &keyIds);
-    if (err != Err::Ok) {
-        return toStatus(err);
+    std::string request;
+    KeyRequestType requestType = KeyRequestType::INITIAL;
+    if (keyType == KeyType::RELEASE) {
+        // For RELEASE the scope is the key set ID and init data must be empty.
+        if (!initData.empty()) {
+            return toStatus(Err::BadValue);
+        }
+        const Err releaseErr = sessions().offlineKeyIds(scope, &keyIds);
+        if (releaseErr != Err::Ok) {
+            return toStatus(releaseErr);
+        }
+        request = buildLicenseReleaseRequest(keyIds);
+        requestType = KeyRequestType::RELEASE;
+    } else {
+        const Err err = parseInitData(initData, mimeType, &keyIds);
+        if (err != Err::Ok) {
+            return toStatus(err);
+        }
+        request = buildLicenseRequest(keyIds, keyType == KeyType::OFFLINE);
     }
-    const std::string request = buildLicenseRequest(keyIds);
     _aidl_return->request.assign(request.begin(), request.end());
-    _aidl_return->requestType = KeyRequestType::INITIAL;
+    _aidl_return->requestType = requestType;
     _aidl_return->defaultUrl = "";
     return Status::ok();
 }
@@ -121,11 +132,19 @@ std::string ClearKeyDrmPlugin::takeTestError() {
     if (scope.empty() || response.empty()) {
         return toStatus(Err::BadValue);
     }
+    _aidl_return->keySetId.clear();
+    std::vector<Bytes> releasedIds;
+    if (!sessions().contains(scope) &&
+            sessions().offlineKeyIds(scope, &releasedIds) == Err::Ok) {
+        // The scope is a key set ID: this is the response to a RELEASE request.
+        return toStatus(sessions().releaseOfflineKeys(scope));
+    }
     if (!sessions().contains(scope)) {
         return toStatus(Err::SessionNotOpened);
     }
     std::vector<KeyEntry> keys;
-    Err err = parseLicenseResponse(response, &keys);
+    bool persistent = false;
+    Err err = parseLicenseResponse(response, &keys, &persistent);
     if (err != Err::Ok) {
         return toStatus(err);
     }
@@ -133,8 +152,12 @@ std::string ClearKeyDrmPlugin::takeTestError() {
     if (err != Err::Ok) {
         return toStatus(err);
     }
-    // Temporary licenses have no key set ID.
-    _aidl_return->keySetId.clear();
+    if (persistent) {
+        err = sessions().storeOfflineKeys(keys, &_aidl_return->keySetId);
+        if (err != Err::Ok) {
+            return toStatus(err);
+        }
+    }
 
     const auto target = listener();
     if (target != nullptr) {

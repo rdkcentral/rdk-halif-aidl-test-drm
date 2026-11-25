@@ -28,7 +28,7 @@ Environment overrides:
   DRM_AIDL_SOURCE_DIR        Generated DRM .cpp directory
   DRM_AIDL_LIBRARY           Prebuilt DRM library instead of generated sources
   AVBUFFERHELPER_INCLUDE_DIR Directory containing IAVBufferHelper.h
-  AVBUFFERHELPER_LIBRARY     Optional platform library; otherwise build placeholder
+  AVBUFFERHELPER_LIBRARY     Optional platform library; otherwise build-only placeholder
   BUILD_DIR                 Output directory (default: build/clearkey/<target>)
   CMAKE_BIN                 CMake executable (default: cmake)
   CMAKE_TOOLCHAIN_FILE       Optional CMake cross-toolchain file
@@ -39,7 +39,8 @@ Environment overrides:
 
 For ARM, source the toolchain environment (CC/CXX) or set CMAKE_TOOLCHAIN_FILE.
 Binder and DRM AIDL are built automatically. Tests run only on Linux.
-The default helper is a link-time placeholder, NOT an L3 buffer mapper.
+Service builds generate Hello World fixtures and clearkey_drm_<target>_vts.tar.gz
+inside BUILD_DIR. The archive does not contain the unified VTS executable.
 Exports passed to this script are respected; executing it does not change
 the calling shell's environment.
 EOF
@@ -93,6 +94,17 @@ if [[ "${TARGET_ARCH}" == linux &&
     unset OECORE_NATIVE_SYSROOT OECORE_TARGET_SYSROOT SDKTARGETSYSROOT
     unset PKG_CONFIG_SYSROOT_DIR PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CONFIG_SITE
     unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH LD_LIBRARY_PATH
+fi
+
+if [[ "${BUILD_SERVICE}" == ON ]]; then
+    if [[ -n "${AVBUFFERHELPER_LIBRARY:-}" ]]; then
+        [[ -f "${AVBUFFERHELPER_LIBRARY}" ]] ||
+            fail "AVBUFFERHELPER_LIBRARY not found: ${AVBUFFERHELPER_LIBRARY}"
+        AVBUFFERHELPER_LIBRARY="$(realpath "${AVBUFFERHELPER_LIBRARY}")"
+    fi
+    command -v python3 >/dev/null || fail "python3 is required to generate fixtures"
+    command -v openssl >/dev/null || fail "Host openssl is required to generate fixtures"
+    command -v tar >/dev/null || fail "tar is required to package the service"
 fi
 
 export RDK_HALIF_AIDL_VERSION="${RDK_HALIF_AIDL_VERSION:-0.23.0}"
@@ -277,14 +289,13 @@ if [[ "${BUILD_SERVICE}" == ON ]]; then
     fi
 
     if [[ -n "${AVBUFFERHELPER_LIBRARY:-}" ]]; then
-        [[ -f "${AVBUFFERHELPER_LIBRARY}" ]] || fail "AVBUFFERHELPER_LIBRARY not found: ${AVBUFFERHELPER_LIBRARY}"
         cmake_args+=("-DCLEARKEY_BUILD_HELPER_SKELETON=OFF")
         helper_install_lib_dir="$(dirname "${AVBUFFERHELPER_LIBRARY}")"
     else
-        echo "WARNING: Building a link-time AVBuffer helper placeholder. Supply the platform library for L3." >&2
+        echo "WARNING: Using a build-only AVBuffer helper placeholder; deploy the platform library." >&2
         cmake_args+=("-DCLEARKEY_BUILD_HELPER_SKELETON=ON")
         AVBUFFERHELPER_LIBRARY="${BUILD_DIR}/libavbufferhelper.so"
-        helper_install_lib_dir="${BUILD_DIR}/usr/lib"
+        helper_install_lib_dir="(platform AVBuffer helper directory)"
     fi
     [[ -f "${BINDER_INCLUDE_DIR:-}/binder/IBinder.h" ]] ||
         fail "Export BINDER_INCLUDE_DIR to the Binder SDK header root"
@@ -325,6 +336,32 @@ if [[ "${TARGET_ARCH}" == linux ]]; then
 fi
 if [[ "${BUILD_SERVICE}" == ON ]]; then
     "${CMAKE_BIN}" --install "${BUILD_DIR}"
+    # Remove only the helper previously installed by the placeholder target.
+    rm -f -- "${BUILD_DIR}/usr/lib/libavbufferhelper.so"
+    python3 "${TOP}/clearkey_reference/tools/make_clearkey_fixtures.py" \
+        "${BUILD_DIR}/fixtures" --text "${CLEARKEY_SAMPLE_TEXT:-Hello World}" --relative-env
+
+    package_name="clearkey_drm_${TARGET_ARCH}_vts"
+    package_stage="$(mktemp -d "${BUILD_DIR}/package.XXXXXX")"
+    trap 'rm -rf -- "${package_stage}"' EXIT
+    package_root="${package_stage}/${package_name}"
+    mkdir -p "${package_root}/usr/bin" "${package_root}/usr/lib/binder" \
+        "${package_root}/usr/lib/rdk-halif-aidl"
+    cp "${BUILD_DIR}/usr/bin/clearkey_service" "${package_root}/usr/bin/"
+    cp -R "${BUILD_DIR}/fixtures" "${package_root}/fixtures"
+    # Dereference SDK links so the archive does not point outside the package.
+    for library in "${BINDER_LIB_DIR}"/*.so*; do
+        [[ -f "${library}" ]] || continue
+        [[ "$(basename "${library}")" != libavbufferhelper.so* ]] || continue
+        cp -L "${library}" "${package_root}/usr/lib/binder/"
+    done
+    if [[ -n "${DRM_AIDL_LIBRARY:-}" ]]; then
+        cp -L "${DRM_AIDL_LIBRARY}" "${package_root}/usr/lib/rdk-halif-aidl/"
+    fi
+    tar -czf "${package_stage}/${package_name}.tar.gz" -C "${package_stage}" "${package_name}"
+    mv "${package_stage}/${package_name}.tar.gz" "${BUILD_DIR}/${package_name}.tar.gz"
+    echo "ClearKey archive: ${BUILD_DIR}/${package_name}.tar.gz"
+    echo "Source ${BUILD_DIR}/fixtures/env.sh before running VTS."
     echo "ClearKey service: ${BUILD_DIR}/usr/bin/clearkey_service"
     echo "At runtime add these directories to LD_LIBRARY_PATH:"
     echo "  ${BINDER_LIB_DIR}:${helper_install_lib_dir}"
